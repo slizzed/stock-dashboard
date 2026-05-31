@@ -798,7 +798,7 @@ with tabs[3]:
             **{**TV, "margin": dict(l=0,r=60,t=8,b=0)},
             height=320, title=dict(text="Today", font=dict(color="#787b86",size=12)),
             xaxis=dict(**TV["xaxis"], ticksuffix="%"),
-            yaxis=dict(**TV["yaxis"], side="left"),
+            yaxis=dict(**{k:v for k,v in TV["yaxis"].items() if k!="side"}, side="left"),
         )
         sc1.plotly_chart(fig_sec_d, use_container_width=True)
 
@@ -818,7 +818,7 @@ with tabs[3]:
             **{**TV, "margin": dict(l=0,r=60,t=8,b=0)},
             height=320, title=dict(text="This Week", font=dict(color="#787b86",size=12)),
             xaxis=dict(**TV["xaxis"], ticksuffix="%"),
-            yaxis=dict(**TV["yaxis"], side="left"),
+            yaxis=dict(**{k:v for k,v in TV["yaxis"].items() if k!="side"}, side="left"),
         )
         sc2.plotly_chart(fig_sec_w, use_container_width=True)
 
