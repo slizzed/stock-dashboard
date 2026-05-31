@@ -794,12 +794,20 @@ with tabs[3]:
             marker_color=colors_t, text=[f"{p:+.2f}%" for p in pcts_t],
             textposition="outside", textfont=dict(color="#d1d4dc", size=11),
         ))
-        fig_sec_d.update_layout(
-            **{**TV, "margin": dict(l=0,r=60,t=8,b=0)},
-            height=320, title=dict(text="Today", font=dict(color="#787b86",size=12)),
-            xaxis=dict(**TV["xaxis"], ticksuffix="%"),
-            yaxis=dict(**{k:v for k,v in TV["yaxis"].items() if k!="side"}, side="left"),
+        _sector_layout_today = dict(
+            plot_bgcolor="#131722", paper_bgcolor="#131722",
+            font=dict(color="#787b86", family="Trebuchet MS,sans-serif", size=11),
+            height=320, margin=dict(l=0, r=80, t=32, b=0),
+            title=dict(text="Today", font=dict(color="#787b86", size=12)),
+            xaxis=dict(gridcolor="#1e222d", linecolor="#2a2e39", showgrid=True,
+                       zeroline=False, tickcolor="#787b86", ticksuffix="%",
+                       tickfont=dict(color="#787b86")),
+            yaxis=dict(gridcolor="#1e222d", linecolor="#2a2e39", showgrid=False,
+                       zeroline=False, tickcolor="#787b86", side="left",
+                       tickfont=dict(color="#d1d4dc", size=11)),
+            hoverlabel=dict(bgcolor="#1e222d", font_color="#d1d4dc"),
         )
+        fig_sec_d.update_layout(**_sector_layout_today)
         sc1.plotly_chart(fig_sec_d, use_container_width=True)
 
         # This week
@@ -814,12 +822,20 @@ with tabs[3]:
             marker_color=colors_w, text=[f"{p:+.2f}%" for p in pcts_w],
             textposition="outside", textfont=dict(color="#d1d4dc", size=11),
         ))
-        fig_sec_w.update_layout(
-            **{**TV, "margin": dict(l=0,r=60,t=8,b=0)},
-            height=320, title=dict(text="This Week", font=dict(color="#787b86",size=12)),
-            xaxis=dict(**TV["xaxis"], ticksuffix="%"),
-            yaxis=dict(**{k:v for k,v in TV["yaxis"].items() if k!="side"}, side="left"),
+        _sector_layout_week = dict(
+            plot_bgcolor="#131722", paper_bgcolor="#131722",
+            font=dict(color="#787b86", family="Trebuchet MS,sans-serif", size=11),
+            height=320, margin=dict(l=0, r=80, t=32, b=0),
+            title=dict(text="This Week", font=dict(color="#787b86", size=12)),
+            xaxis=dict(gridcolor="#1e222d", linecolor="#2a2e39", showgrid=True,
+                       zeroline=False, tickcolor="#787b86", ticksuffix="%",
+                       tickfont=dict(color="#787b86")),
+            yaxis=dict(gridcolor="#1e222d", linecolor="#2a2e39", showgrid=False,
+                       zeroline=False, tickcolor="#787b86", side="left",
+                       tickfont=dict(color="#d1d4dc", size=11)),
+            hoverlabel=dict(bgcolor="#1e222d", font_color="#d1d4dc"),
         )
+        fig_sec_w.update_layout(**_sector_layout_week)
         sc2.plotly_chart(fig_sec_w, use_container_width=True)
 
         # Hot / Cold sectors
