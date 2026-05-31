@@ -121,6 +121,181 @@ def _bb(c, n=20, w=2.0):
     mid = c.rolling(n).mean(); sd = c.rolling(n).std()
     return mid, mid + w*sd, mid - w*sd
 
+# ── Weekly picks universe ─────────────────────────────────────────────────────
+SCAN_UNIVERSE = [
+    "NVDA","AMD","INTC","MU","MRVL","SMCI","NVTS","AVGO","ARM","TSM",
+    "IONQ","QBTS","RGTI","QUBT","ARQQ","IBM",
+    "ENPH","SEDG","FSLR","RUN","ARRY","FLNC","MAXN","TAN",
+    "RKLB","ASTS","LUNR","RDW","ACHR","JOBY","SPCE","BA","GE",
+    "PLTR","SOUN","BBAI","AI","KULR","SERV","IREN","WULF","GFAI",
+    "BB","NOK","ERIC","LUMN",
+    "TSLA","RIVN","LCID","CHPT","BLNK","EVGO","NIO","XPEV","LI",
+    "MARA","RIOT","HUT","CIFR","BITF","MIGI","COIN","HOOD","SOFI",
+    "AAPL","MSFT","GOOGL","META","AMZN","NFLX","PYPL","SQ","AFRM",
+    "SNAP","PINS","UBER","LYFT","ABNB","DASH","GME","AMC","SKLZ",
+    "DPRO","MARK","NNDM","CLOV","WKHS","OPEN","MVST","BFLY","ATER",
+]
+
+SECTOR_ETFS = {
+    "Technology":        "XLK",
+    "Financials":        "XLF",
+    "Energy":            "XLE",
+    "Healthcare":        "XLV",
+    "Communication":     "XLC",
+    "Consumer Disc.":    "XLY",
+    "Consumer Staples":  "XLP",
+    "Industrials":       "XLI",
+    "Materials":         "XLB",
+    "Real Estate":       "XLRE",
+    "Utilities":         "XLU",
+}
+
+INDICES = {"S&P 500": "SPY", "NASDAQ 100": "QQQ", "Russell 2000": "IWM", "Dow Jones": "DIA"}
+
+
+def _quick_score(close, lrsi, lmacd, lsig, lma20, lma50):
+    price = float(close.iloc[-1])
+    score = 0
+    if price > lma20: score += 1
+    else:             score -= 1
+    if price > lma50: score += 1
+    else:             score -= 1
+    if lma20 > lma50: score += 1
+    else:             score -= 1
+    if   lrsi < 30:            score += 2
+    elif lrsi > 70:            score -= 2
+    elif 45 <= lrsi <= 65:     score += 1
+    if lmacd > lsig:  score += 1
+    else:             score -= 1
+    if len(close) >= 5:
+        m5 = (price - float(close.iloc[-5])) / float(close.iloc[-5]) * 100
+        if   m5 > 5:  score += 1
+        elif m5 < -5: score -= 1
+    return score
+
+
+@st.cache_data(ttl=1800)
+def _weekly_scan():
+    syms = list(dict.fromkeys(SCAN_UNIVERSE))
+    try:
+        df = yf.download(" ".join(syms), period="21d", auto_adjust=True,
+                         progress=False, threads=True, group_by="ticker")
+    except Exception:
+        return []
+
+    picks = []
+    for sym in syms:
+        try:
+            sym_df = df if len(syms) == 1 else (df[sym] if sym in df.columns.get_level_values(0) else None)
+            if sym_df is None or sym_df.empty or len(sym_df) < 10:
+                continue
+            close  = sym_df["Close"].dropna()
+            price  = float(close.iloc[-1])
+            if not (0.50 <= price <= 999):
+                continue
+            ma20 = close.rolling(20).mean(); ma50 = close.rolling(50).mean()
+            lma20 = float(ma20.dropna().iloc[-1]) if not ma20.dropna().empty else price
+            lma50 = float(ma50.dropna().iloc[-1]) if not ma50.dropna().empty else price
+            lrsi  = float(_rsi(close).dropna().iloc[-1]) if not _rsi(close).dropna().empty else 50
+            ml, sl, _ = _macd(close)
+            lmacd = float(ml.dropna().iloc[-1]) if not ml.dropna().empty else 0
+            lsig  = float(sl.dropna().iloc[-1]) if not sl.dropna().empty else 0
+            score = _quick_score(close, lrsi, lmacd, lsig, lma20, lma50)
+            if score < 2:
+                continue
+            prev5     = float(close.iloc[-6]) if len(close) >= 6 else float(close.iloc[0])
+            week_pct  = round((price - prev5) / prev5 * 100, 2)
+            entry     = round(min(price, lma20) * 0.997, 2)
+            stop      = round(lma50 * 0.97, 2)
+            target    = round(price * 1.15, 2)
+            picks.append(dict(symbol=sym, price=round(price,2), week_pct=week_pct,
+                              score=score, rsi=round(lrsi,1), ma20=round(lma20,2),
+                              entry=entry, stop=stop, target=target, name=sym, sector=""))
+        except Exception:
+            continue
+
+    picks.sort(key=lambda x: x["score"], reverse=True)
+    top = picks[:10]
+    for p in top:
+        try:
+            inf = yf.Ticker(p["symbol"]).fast_info
+            p["name"] = p["symbol"]
+        except Exception:
+            pass
+    # Enrich names
+    for p in top:
+        try:
+            p["name"] = yf.Ticker(p["symbol"]).info.get("shortName") or p["symbol"]
+            p["sector"] = yf.Ticker(p["symbol"]).info.get("sector","")
+        except Exception:
+            pass
+    return top
+
+
+@st.cache_data(ttl=120)
+def _market_overview():
+    all_syms = list(INDICES.values()) + list(SECTOR_ETFS.values()) + ["^VIX"]
+    try:
+        df = yf.download(" ".join(all_syms), period="6mo", auto_adjust=True,
+                         progress=False, threads=True, group_by="ticker")
+    except Exception:
+        return {}, {}
+
+    def _pct_change(sym):
+        try:
+            s = df[sym]["Close"].dropna() if sym in df.columns.get_level_values(0) else pd.Series()
+            if len(s) < 2: return None
+            return round((float(s.iloc[-1]) - float(s.iloc[-2])) / float(s.iloc[-2]) * 100, 2)
+        except Exception:
+            return None
+
+    def _week_pct(sym):
+        try:
+            s = df[sym]["Close"].dropna() if sym in df.columns.get_level_values(0) else pd.Series()
+            if len(s) < 6: return None
+            return round((float(s.iloc[-1]) - float(s.iloc[-6])) / float(s.iloc[-6]) * 100, 2)
+        except Exception:
+            return None
+
+    def _price(sym):
+        try:
+            s = df[sym]["Close"].dropna() if sym in df.columns.get_level_values(0) else pd.Series()
+            return round(float(s.iloc[-1]), 2) if not s.empty else None
+        except Exception:
+            return None
+
+    def _sparkline(sym):
+        try:
+            s = df[sym]["Close"].dropna() if sym in df.columns.get_level_values(0) else pd.Series()
+            return s.iloc[-20:].tolist() if len(s) >= 20 else s.tolist()
+        except Exception:
+            return []
+
+    def _above_ma200(sym):
+        try:
+            s = df[sym]["Close"].dropna() if sym in df.columns.get_level_values(0) else pd.Series()
+            if len(s) < 200: return None
+            return float(s.iloc[-1]) > float(s.rolling(200).mean().iloc[-1])
+        except Exception:
+            return None
+
+    indices = {}
+    for name, sym in INDICES.items():
+        indices[name] = dict(sym=sym, price=_price(sym), day_pct=_pct_change(sym),
+                             week_pct=_week_pct(sym), sparkline=_sparkline(sym),
+                             above_ma200=_above_ma200(sym))
+
+    vix_price = _price("^VIX")
+    vix_day   = _pct_change("^VIX")
+
+    sectors = {}
+    for name, sym in SECTOR_ETFS.items():
+        sectors[name] = dict(sym=sym, day_pct=_pct_change(sym),
+                             week_pct=_week_pct(sym), price=_price(sym))
+
+    return indices, sectors, vix_price, vix_day
+
+
 def _trade_setup(close, hist, rsi_s, macd_line, sig_line, ma20, ma50, ma200):
     price   = float(close.iloc[-1])
     lma20   = float(ma20.dropna().iloc[-1])  if not ma20.dropna().empty  else price
@@ -326,7 +501,7 @@ c6.metric("Beta",           _v(info.get("beta")))
 st.markdown("<hr style='border-color:#2a2e39;margin:6px 0 0 0;'>", unsafe_allow_html=True)
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tabs = st.tabs(["📊  Chart", "🎯  Trade Setup", "📉  Technicals", "📋  Fundamentals", "📰  News & Analysts"])
+tabs = st.tabs(["📊  Chart", "🎯  Trade Setup", "📅  This Week", "🌍  Market Trends", "📉  Technicals", "📋  Fundamentals", "📰  News & Analysts"])
 
 # ══════════════════════════════════════════════════════════════════════
 # TAB 1 — CHART (TradingView style)
@@ -459,9 +634,229 @@ with tabs[1]:
     )
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 3 — TECHNICALS
+# TAB 3 — THIS WEEK'S PICKS
 # ══════════════════════════════════════════════════════════════════════
 with tabs[2]:
+    st.markdown("<p style='color:#787b86;font-size:12px;'>Scans 80+ stocks · scored on RSI, MACD, MA alignment, momentum · cached 30 min</p>",
+                unsafe_allow_html=True)
+
+    with st.spinner("Scanning market for this week's best setups…"):
+        weekly_picks = _weekly_scan()
+
+    if not weekly_picks:
+        st.warning("No strongly bullish picks found right now. Market may be in a bearish phase.")
+    else:
+        scan_time = datetime.datetime.now().strftime("%I:%M %p")
+        st.markdown(f"<p style='color:#555;font-size:11px;margin-bottom:12px;'>Last scanned: {scan_time}</p>",
+                    unsafe_allow_html=True)
+        for rank, p in enumerate(weekly_picks, 1):
+            sym      = p["symbol"]
+            name     = p.get("name", sym)
+            price    = p["price"]
+            wpct     = p["week_pct"]
+            score    = p["score"]
+            entry    = p["entry"]
+            stop     = p["stop"]
+            target   = p["target"]
+            rsi_v    = p["rsi"]
+            sector_v = p.get("sector","")
+            upside   = round((target - price) / price * 100, 1)
+            risk_p   = round((price - stop) / price * 100, 1)
+            wcolor   = "#26a69a" if wpct >= 0 else "#ef5350"
+            wsign    = "+" if wpct >= 0 else ""
+            score_c  = "#26a69a" if score >= 4 else ("#4caf50" if score >= 2 else "#ffd700")
+
+            st.markdown(
+                f'<div style="background:#1e222d;border:1px solid #2a2e39;border-left:3px solid {score_c};'
+                f'border-radius:6px;padding:14px 18px;margin-bottom:10px;display:flex;align-items:center;gap:0;">'
+
+                f'<div style="min-width:32px;color:#555;font-size:13px;font-weight:700;">#{rank}</div>'
+
+                f'<div style="min-width:180px;">'
+                f'<span style="color:#d1d4dc;font-size:15px;font-weight:700;">{sym}</span>'
+                f'<span style="color:#555;font-size:11px;margin-left:8px;">{name[:22]}</span><br>'
+                f'<span style="color:#555;font-size:10px;">{sector_v}</span>'
+                f'</div>'
+
+                f'<div style="min-width:100px;">'
+                f'<div style="color:#d1d4dc;font-size:15px;font-weight:600;">${price:.2f}</div>'
+                f'<div style="color:{wcolor};font-size:12px;">{wsign}{wpct:.1f}% wk</div>'
+                f'</div>'
+
+                f'<div style="min-width:90px;text-align:center;">'
+                f'<div style="color:#ffd700;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;">Entry</div>'
+                f'<div style="color:#ffd700;font-size:14px;font-weight:600;">${entry}</div>'
+                f'</div>'
+
+                f'<div style="min-width:90px;text-align:center;">'
+                f'<div style="color:#ef5350;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;">Stop</div>'
+                f'<div style="color:#ef5350;font-size:14px;font-weight:600;">${stop} <span style="font-size:10px;">(-{risk_p}%)</span></div>'
+                f'</div>'
+
+                f'<div style="min-width:90px;text-align:center;">'
+                f'<div style="color:#26a69a;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;">Target</div>'
+                f'<div style="color:#26a69a;font-size:14px;font-weight:600;">${target} <span style="font-size:10px;">(+{upside}%)</span></div>'
+                f'</div>'
+
+                f'<div style="margin-left:auto;text-align:right;">'
+                f'<div style="color:{score_c};font-size:18px;font-weight:800;">{score:+d}</div>'
+                f'<div style="color:#555;font-size:10px;">RSI {rsi_v:.0f}</div>'
+                f'</div>'
+
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown('<p style="color:#363a45;font-size:10px;margin-top:12px;">Not financial advice. Technical signals only.</p>',
+                unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 4 — MARKET TRENDS
+# ══════════════════════════════════════════════════════════════════════
+with tabs[3]:
+    with st.spinner("Loading market data…"):
+        try:
+            indices, sectors, vix_price, vix_day = _market_overview()
+        except Exception:
+            indices, sectors, vix_price, vix_day = {}, {}, None, None
+
+    # ── Major indices ──────────────────────────────────────────────────
+    st.markdown("#### Major Indices")
+    idx_cols = st.columns(5)
+    for i, (name, data) in enumerate(indices.items()):
+        dp = data.get("day_pct") or 0
+        wp = data.get("week_pct") or 0
+        pr = data.get("price")
+        col = idx_cols[i]
+        c = "#26a69a" if dp >= 0 else "#ef5350"
+        s = "+" if dp >= 0 else ""
+        col.markdown(
+            f'<div style="background:#1e222d;border:1px solid #2a2e39;border-radius:6px;padding:12px 14px;">'
+            f'<div style="color:#787b86;font-size:10px;text-transform:uppercase;">{name}</div>'
+            f'<div style="color:#d1d4dc;font-size:17px;font-weight:700;margin-top:4px;">${pr:,.2f}</div>'
+            f'<div style="color:{c};font-size:13px;">{s}{dp:.2f}% today</div>'
+            f'<div style="color:#555;font-size:11px;">{("+" if wp>=0 else "")}{wp:.1f}% this week</div>'
+            f'</div>', unsafe_allow_html=True,
+        )
+
+    # VIX
+    vix_c = "#ef5350" if (vix_price or 20) > 25 else ("#ffd700" if (vix_price or 20) > 18 else "#26a69a")
+    vix_mood = "High Fear" if (vix_price or 0) > 25 else ("Elevated" if (vix_price or 0) > 18 else "Low Fear / Calm")
+    idx_cols[4].markdown(
+        f'<div style="background:#1e222d;border:1px solid #2a2e39;border-radius:6px;padding:12px 14px;">'
+        f'<div style="color:#787b86;font-size:10px;text-transform:uppercase;">VIX Fear Index</div>'
+        f'<div style="color:{vix_c};font-size:17px;font-weight:700;margin-top:4px;">{vix_price:.1f}</div>'
+        f'<div style="color:{vix_c};font-size:13px;">{vix_mood}</div>'
+        f'<div style="color:#555;font-size:11px;">{"+" if (vix_day or 0)>=0 else ""}{vix_day:.1f}% today</div>'
+        f'</div>' if vix_price else '<div style="color:#555;">—</div>', unsafe_allow_html=True,
+    )
+
+    # ── Market pulse ───────────────────────────────────────────────────
+    spy_data   = indices.get("S&P 500", {})
+    spy_above  = spy_data.get("above_ma200")
+    qqq_data   = indices.get("NASDAQ 100", {})
+    qqq_above  = qqq_data.get("above_ma200")
+
+    bull_count = sum(1 for v in [spy_above, qqq_above] if v)
+    pulse_color = "#26a69a" if bull_count >= 2 else ("#ffd700" if bull_count == 1 else "#ef5350")
+    pulse_label = "Bull Market" if bull_count >= 2 else ("Mixed / Caution" if bull_count == 1 else "Bear Market")
+    pulse_desc  = (
+        "SPY and QQQ are both above their 200-day moving averages — broad market is in an uptrend. Risk-on conditions favor momentum and growth stocks."
+        if bull_count >= 2 else
+        "Mixed signals. One major index is below its 200-day MA. Be selective — focus on sector leaders with strong momentum."
+        if bull_count == 1 else
+        "Both SPY and QQQ are below their 200-day MAs — bear market conditions. Reduce risk, prioritize capital preservation."
+    )
+
+    st.markdown("<hr style='border-color:#2a2e39;margin:16px 0 12px 0;'>", unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="background:rgba(0,0,0,0.25);border:1px solid {pulse_color};border-radius:8px;'
+        f'padding:14px 20px;margin-bottom:16px;display:flex;align-items:center;gap:16px;">'
+        f'<div style="color:{pulse_color};font-size:22px;font-weight:800;min-width:180px;">📡 {pulse_label}</div>'
+        f'<div style="color:#787b86;font-size:13px;">{pulse_desc}</div>'
+        f'</div>', unsafe_allow_html=True,
+    )
+
+    # ── Sector performance ─────────────────────────────────────────────
+    st.markdown("#### Sector Performance")
+    if sectors:
+        sc1, sc2 = st.columns(2)
+
+        # Today
+        today_data = [(n, d.get("day_pct") or 0) for n, d in sectors.items()]
+        today_data.sort(key=lambda x: x[1], reverse=True)
+        names_t  = [x[0] for x in today_data]
+        pcts_t   = [x[1] for x in today_data]
+        colors_t = ["#26a69a" if p >= 0 else "#ef5350" for p in pcts_t]
+
+        fig_sec_d = go.Figure(go.Bar(
+            x=pcts_t, y=names_t, orientation="h",
+            marker_color=colors_t, text=[f"{p:+.2f}%" for p in pcts_t],
+            textposition="outside", textfont=dict(color="#d1d4dc", size=11),
+        ))
+        fig_sec_d.update_layout(
+            **{**TV, "margin": dict(l=0,r=60,t=8,b=0)},
+            height=320, title=dict(text="Today", font=dict(color="#787b86",size=12)),
+            xaxis=dict(**TV["xaxis"], ticksuffix="%"),
+            yaxis=dict(**TV["yaxis"], side="left"),
+        )
+        sc1.plotly_chart(fig_sec_d, use_container_width=True)
+
+        # This week
+        week_data = [(n, d.get("week_pct") or 0) for n, d in sectors.items()]
+        week_data.sort(key=lambda x: x[1], reverse=True)
+        names_w  = [x[0] for x in week_data]
+        pcts_w   = [x[1] for x in week_data]
+        colors_w = ["#26a69a" if p >= 0 else "#ef5350" for p in pcts_w]
+
+        fig_sec_w = go.Figure(go.Bar(
+            x=pcts_w, y=names_w, orientation="h",
+            marker_color=colors_w, text=[f"{p:+.2f}%" for p in pcts_w],
+            textposition="outside", textfont=dict(color="#d1d4dc", size=11),
+        ))
+        fig_sec_w.update_layout(
+            **{**TV, "margin": dict(l=0,r=60,t=8,b=0)},
+            height=320, title=dict(text="This Week", font=dict(color="#787b86",size=12)),
+            xaxis=dict(**TV["xaxis"], ticksuffix="%"),
+            yaxis=dict(**TV["yaxis"], side="left"),
+        )
+        sc2.plotly_chart(fig_sec_w, use_container_width=True)
+
+        # Hot / Cold sectors
+        today_sorted = sorted(sectors.items(), key=lambda x: x[1].get("day_pct") or 0, reverse=True)
+        hot3  = today_sorted[:3]
+        cold3 = today_sorted[-3:]
+
+        st.markdown("#### 🔥 Hot Sectors Today")
+        hc = st.columns(3)
+        for i, (sname, sd) in enumerate(hot3):
+            dp = sd.get("day_pct") or 0
+            wp = sd.get("week_pct") or 0
+            hc[i].markdown(
+                f'<div style="background:rgba(38,166,154,0.1);border:1px solid #26a69a;border-radius:6px;padding:12px 14px;">'
+                f'<div style="color:#26a69a;font-size:14px;font-weight:700;">{sname}</div>'
+                f'<div style="color:#d1d4dc;font-size:18px;font-weight:700;">+{dp:.2f}%</div>'
+                f'<div style="color:#555;font-size:11px;">Week: {("+" if wp>=0 else "")}{wp:.1f}%</div>'
+                f'</div>', unsafe_allow_html=True,
+            )
+
+        st.markdown("#### 🥶 Weak Sectors Today")
+        cc = st.columns(3)
+        for i, (sname, sd) in enumerate(cold3):
+            dp = sd.get("day_pct") or 0
+            wp = sd.get("week_pct") or 0
+            cc[i].markdown(
+                f'<div style="background:rgba(239,83,80,0.1);border:1px solid #ef5350;border-radius:6px;padding:12px 14px;">'
+                f'<div style="color:#ef5350;font-size:14px;font-weight:700;">{sname}</div>'
+                f'<div style="color:#d1d4dc;font-size:18px;font-weight:700;">{dp:.2f}%</div>'
+                f'<div style="color:#555;font-size:11px;">Week: {("+" if wp>=0 else "")}{wp:.1f}%</div>'
+                f'</div>', unsafe_allow_html=True,
+            )
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 5 — TECHNICALS
+# ══════════════════════════════════════════════════════════════════════
+with tabs[4]:
     fig_bb = go.Figure()
     fig_bb.add_trace(go.Scatter(x=hist.index, y=bb_up, name="Upper",
         line=dict(color="rgba(41,98,255,0.4)", width=1, dash="dot")))
@@ -504,9 +899,9 @@ with tabs[2]:
     st.plotly_chart(fig_macd, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 4 — FUNDAMENTALS
+# TAB 6 — FUNDAMENTALS
 # ══════════════════════════════════════════════════════════════════════
-with tabs[3]:
+with tabs[5]:
     st.markdown("#### Valuation")
     f1,f2,f3,f4 = st.columns(4)
     f1.metric("P/E (TTM)",       _v(info.get("trailingPE")))
@@ -543,9 +938,9 @@ with tabs[3]:
     f4.metric("Dividend Yield",  _P(info.get("dividendYield")))
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 5 — NEWS & ANALYSTS
+# TAB 7 — NEWS & ANALYSTS
 # ══════════════════════════════════════════════════════════════════════
-with tabs[4]:
+with tabs[6]:
     rec_raw = (info.get("recommendationKey","") or "").replace("_"," ").upper()
     t_lo, t_mn, t_hi = info.get("targetLowPrice"), info.get("targetMeanPrice"), info.get("targetHighPrice")
 
