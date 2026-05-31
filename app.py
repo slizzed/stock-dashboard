@@ -177,6 +177,50 @@ SCAN_UNIVERSE = [
     "DPRO","MARK","NNDM","CLOV","WKHS","OPEN","MVST","BFLY","ATER",
 ]
 
+TODAY_UNIVERSE = [
+    "SOUN","BBAI","IONQ","QBTS","RGTI","QUBT","RKLB","ASTS","LUNR","ACHR","JOBY",
+    "KULR","SERV","IREN","WULF","PLTR","AI","NVTS","ARRY","FLNC","RUN","SEDG","MAXN",
+    "BB","NOK","ERIC","LUMN","RIVN","LCID","CHPT","BLNK","EVGO","NIO","XPEV","LI",
+    "MARA","RIOT","HUT","CIFR","COIN","HOOD","SOFI","AFRM","SNAP","DPRO","GFAI","CLOV",
+    "NVDA","AMD","TSLA","AAPL","META","AMZN","MSFT","GOOGL","AVGO","ARM","SMCI","MRVL",
+]
+
+
+@st.cache_data(ttl=300)
+def _today_scan() -> list:
+    syms = list(dict.fromkeys(TODAY_UNIVERSE))
+    try:
+        df = yf.download(" ".join(syms), period="5d", auto_adjust=True,
+                         progress=False, threads=True, group_by="ticker")
+    except Exception:
+        return []
+    picks = []
+    for sym in syms:
+        try:
+            sym_df = df if len(syms)==1 else (df[sym] if sym in df.columns.get_level_values(0) else None)
+            if sym_df is None or sym_df.empty or len(sym_df) < 2: continue
+            close = sym_df["Close"].dropna(); vol = sym_df["Volume"].dropna()
+            price = float(close.iloc[-1]); prev = float(close.iloc[-2])
+            if price <= 0 or prev <= 0: continue
+            day_pct = (price - prev) / prev * 100
+            if day_pct < 0.5: continue
+            avg_vol   = float(vol.iloc[:-1].mean()) if len(vol) > 1 else float(vol.iloc[-1])
+            vol_ratio = float(vol.iloc[-1]) / avg_vol if avg_vol > 0 else 1
+            rsi_val   = float(_rsi(close).dropna().iloc[-1]) if not _rsi(close).dropna().empty else 50
+            score     = min(day_pct*3,40) + min(vol_ratio/3*30,30) + (10 if 40<=rsi_val<=65 else 0)
+            picks.append(dict(symbol=sym, price=round(price,2), day_pct=round(day_pct,2),
+                              vol_ratio=round(vol_ratio,1), rsi=round(rsi_val,1),
+                              score=round(score,1), name=sym))
+        except Exception:
+            continue
+    picks.sort(key=lambda x: x["score"], reverse=True)
+    top = picks[:10]
+    for p in top:
+        try: p["name"] = yf.Ticker(p["symbol"]).info.get("shortName") or p["symbol"]
+        except: pass
+    return top
+
+
 SECTOR_ETFS = {
     "Technology":        "XLK",
     "Financials":        "XLF",
@@ -484,6 +528,42 @@ with st.sidebar:
             ticker = sym
 
     st.markdown("<hr style='border-color:#2a2e39;margin:10px 0;'>", unsafe_allow_html=True)
+
+    pick_tab = st.radio("", ["📅 This Week", "⚡ Today"], horizontal=True, label_visibility="collapsed")
+
+    def _pick_row(rank, p, pct_key):
+        pct  = p.get(pct_key, 0) or 0
+        sym  = p.get("symbol","")
+        pr   = p.get("price", 0)
+        name = (p.get("name") or sym)[:18]
+        c    = "#26a69a" if pct >= 0 else "#ef5350"
+        s    = "+" if pct >= 0 else ""
+        st.markdown(
+            f"<div style='display:flex;align-items:center;padding:6px 4px;border-bottom:1px solid #1e222d;gap:6px;'>"
+            f"<span style='color:#555;font-size:10px;min-width:16px;'>#{rank}</span>"
+            f"<div style='flex:1;min-width:0;'><span style='color:#d1d4dc;font-size:13px;font-weight:700;'>{sym}</span>"
+            f"<br><span style='color:#555;font-size:9px;'>{name}</span></div>"
+            f"<div style='text-align:right;'><span style='color:#d1d4dc;font-size:12px;'>${pr:.2f}</span><br>"
+            f"<span style='color:{c};font-size:11px;font-weight:600;'>{s}{pct:.1f}%</span></div></div>",
+            unsafe_allow_html=True,
+        )
+
+    if pick_tab == "📅 This Week":
+        with st.spinner("Scanning…"):
+            wpicks = _weekly_scan()
+        if wpicks:
+            for i, p in enumerate(wpicks, 1): _pick_row(i, p, "week_pct")
+        else:
+            st.caption("No bullish picks found.")
+    else:
+        with st.spinner("Scanning today…"):
+            dpicks = _today_scan()
+        if dpicks:
+            for i, p in enumerate(dpicks, 1): _pick_row(i, p, "day_pct")
+        else:
+            st.caption("No strong movers yet today.")
+
+    st.markdown("<hr style='border-color:#2a2e39;margin:8px 0;'>", unsafe_allow_html=True)
     st.markdown("<p style='color:#555;font-size:10px;'>10,000+ US & global stocks · Yahoo Finance · Not financial advice</p>", unsafe_allow_html=True)
 
 # ── Load ───────────────────────────────────────────────────────────────────────
