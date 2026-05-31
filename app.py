@@ -1,5 +1,8 @@
 import datetime
 import math
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -101,10 +104,48 @@ def _market_status():
     if datetime.time(16,0) <= t < datetime.time(20,0):     return "⬤ After-Hours", "#ffd700"
     return "⬤ Closed", "#ef5350"
 
+@st.cache_data(ttl=300)
+def _fetch_news(ticker: str, company_name: str = "") -> list:
+    """Fetch news via Google News RSS — reliable, no API key needed."""
+    query = urllib.parse.quote(f"{ticker} {company_name} stock".strip())
+    url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            root = ET.fromstring(r.read())
+        channel = root.find("channel")
+        items = channel.findall("item") if channel is not None else []
+        news = []
+        for item in items[:15]:
+            title    = item.findtext("title", "").strip()
+            link     = item.findtext("link", "").strip()
+            pub_date = item.findtext("pubDate", "").strip()
+            src_el   = item.find("source")
+            source   = src_el.text.strip() if src_el is not None and src_el.text else ""
+            if " - " in title:
+                parts  = title.rsplit(" - ", 1)
+                title  = parts[0].strip()
+                source = source or parts[1].strip()
+            try:
+                dt = datetime.datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %Z")
+                ts = int(dt.timestamp())
+            except Exception:
+                ts = 0
+            news.append({"title": title, "publisher": source,
+                         "link": link, "providerPublishTime": ts})
+        return news
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=55)
 def _load(ticker, period):
-    t = yf.Ticker(ticker)
-    return t.history(period=period, auto_adjust=True), t.info, (t.news or [])
+    t    = yf.Ticker(ticker)
+    hist = t.history(period=period, auto_adjust=True)
+    info = t.info
+    name = info.get("shortName") or info.get("longName") or ticker
+    news = _fetch_news(ticker, name)
+    return hist, info, news
 
 def _rsi(c, n=14):
     d = c.diff()
