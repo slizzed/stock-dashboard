@@ -883,8 +883,14 @@ with tabs[4]:
         line=dict(color="rgba(41,98,255,0.6)", width=1)))
     fig_bb.add_trace(go.Scatter(x=hist.index, y=close, name="Price",
         line=dict(color="#26a69a", width=1.5)))
-    fig_bb.update_layout(**TV, height=260, title=dict(text="Bollinger Bands (20, 2σ)",
-        font=dict(color="#787b86", size=12)), xaxis_rangeslider_visible=False)
+    fig_bb.update_layout(plot_bgcolor="#131722", paper_bgcolor="#131722", height=260,
+        font=dict(color="#787b86",family="Trebuchet MS,sans-serif",size=11),
+        legend=dict(bgcolor="rgba(0,0,0,0)",font=dict(color="#787b86",size=11)),
+        margin=dict(l=12,r=60,t=36,b=0), hovermode="x unified",
+        hoverlabel=dict(bgcolor="#1e222d",font_color="#d1d4dc"),
+        title=dict(text="Bollinger Bands (20, 2σ)",font=dict(color="#787b86",size=12)),
+        xaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",tickfont=dict(color="#787b86"),rangeslider_visible=False),
+        yaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",side="right",tickprefix="$"))
     fig_bb.update_yaxes(tickprefix="$")
     st.plotly_chart(fig_bb, use_container_width=True)
 
@@ -899,8 +905,14 @@ with tabs[4]:
                       annotation_position="right")
     fig_rsi.add_trace(go.Scatter(x=hist.index, y=rsi_s, name="RSI (14)",
         line=dict(color="#f0b429", width=1.5)))
-    fig_rsi.update_layout(**TV, height=220, title=dict(text="RSI (14)",
-        font=dict(color="#787b86", size=12)), yaxis=dict(**TV["yaxis"], range=[0,100]))
+    fig_rsi.update_layout(plot_bgcolor="#131722", paper_bgcolor="#131722", height=220,
+        font=dict(color="#787b86",family="Trebuchet MS,sans-serif",size=11),
+        legend=dict(bgcolor="rgba(0,0,0,0)",font=dict(color="#787b86",size=11)),
+        margin=dict(l=12,r=60,t=36,b=0), hovermode="x unified",
+        hoverlabel=dict(bgcolor="#1e222d",font_color="#d1d4dc"),
+        title=dict(text="RSI (14)",font=dict(color="#787b86",size=12)),
+        xaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",tickfont=dict(color="#787b86")),
+        yaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",side="right",range=[0,100]))
     st.plotly_chart(fig_rsi, use_container_width=True)
 
     hc = ["rgba(38,166,154,0.7)" if v >= 0 else "rgba(239,83,80,0.7)" for v in macd_h.fillna(0)]
@@ -910,8 +922,14 @@ with tabs[4]:
         line=dict(color="#2962ff", width=1.5)))
     fig_macd.add_trace(go.Scatter(x=hist.index, y=sig_l, name="Signal",
         line=dict(color="#ff6d00", width=1.5)))
-    fig_macd.update_layout(**TV, height=220, title=dict(text="MACD (12, 26, 9)",
-        font=dict(color="#787b86", size=12)))
+    fig_macd.update_layout(plot_bgcolor="#131722", paper_bgcolor="#131722", height=220,
+        font=dict(color="#787b86",family="Trebuchet MS,sans-serif",size=11),
+        legend=dict(bgcolor="rgba(0,0,0,0)",font=dict(color="#787b86",size=11)),
+        margin=dict(l=12,r=60,t=36,b=0), hovermode="x unified",
+        hoverlabel=dict(bgcolor="#1e222d",font_color="#d1d4dc"),
+        title=dict(text="MACD (12, 26, 9)",font=dict(color="#787b86",size=12)),
+        xaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",tickfont=dict(color="#787b86")),
+        yaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",side="right"))
     st.plotly_chart(fig_macd, use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════
