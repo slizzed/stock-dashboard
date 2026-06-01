@@ -107,6 +107,72 @@ def _market_status():
     if datetime.time(16,0) <= t < datetime.time(20,0):     return "⬤ After-Hours", "#ffd700"
     return "⬤ Closed", "#ef5350"
 
+@st.cache_data(ttl=3600)
+def _fetch_analyst_data(ticker: str) -> dict:
+    """Fetch earnings history, analyst recommendations, and guidance."""
+    t = yf.Ticker(ticker)
+    result = {"earnings": [], "recommendations": [], "next_earnings": None}
+    try:
+        ed = t.earnings_dates
+        if ed is not None and not ed.empty:
+            rows = []
+            for dt, row in ed.iterrows():
+                eps_est  = row.get("EPS Estimate")
+                eps_act  = row.get("Reported EPS")
+                surprise = row.get("Surprise(%)")
+                if eps_est is None and eps_act is None:
+                    continue
+                import math as _math
+                def _clean(v):
+                    try: return None if v is None or (isinstance(v,float) and _math.isnan(v)) else float(v)
+                    except: return None
+                eps_est  = _clean(eps_est)
+                eps_act  = _clean(eps_act)
+                surprise = _clean(surprise)
+                beat     = None
+                if eps_est is not None and eps_act is not None:
+                    beat = eps_act >= eps_est
+                rows.append({
+                    "date":    dt.strftime("%b %d, %Y") if hasattr(dt,"strftime") else str(dt)[:10],
+                    "eps_est": eps_est,
+                    "eps_act": eps_act,
+                    "surprise": surprise,
+                    "beat":    beat,
+                    "future":  dt > pd.Timestamp.now(tz=dt.tzinfo),
+                })
+            rows.sort(key=lambda x: x["date"], reverse=True)
+            future = [r for r in rows if r.get("future")]
+            past   = [r for r in rows if not r.get("future")]
+            result["earnings"]      = past[:8]
+            result["next_earnings"] = future[0] if future else None
+    except Exception:
+        pass
+    try:
+        rec = t.recommendations
+        if rec is not None and not rec.empty:
+            rec = rec.reset_index()
+            date_col = "period" if "period" in rec.columns else (rec.columns[0] if len(rec.columns) > 0 else None)
+            recs = []
+            for _, row in rec.iterrows():
+                try:
+                    firm   = str(row.get("Firm","")).strip()
+                    action = str(row.get("Action","")).strip()
+                    to_g   = str(row.get("To Grade","")).strip()
+                    fr_g   = str(row.get("From Grade","")).strip()
+                    dt_val = row.get(date_col,"")
+                    try:    dt_str = pd.Timestamp(dt_val).strftime("%b %d, %Y")
+                    except: dt_str = str(dt_val)[:10]
+                    if firm and (to_g or action):
+                        recs.append({"date":dt_str,"firm":firm,"action":action,"to":to_g,"from":fr_g})
+                except Exception:
+                    continue
+            recs.sort(key=lambda x: x["date"], reverse=True)
+            result["recommendations"] = recs[:12]
+    except Exception:
+        pass
+    return result
+
+
 @st.cache_data(ttl=300)
 def _fetch_news(ticker: str, company_name: str = "") -> list:
     """Fetch news via Google News RSS — reliable, no API key needed."""
@@ -1178,41 +1244,115 @@ with tabs[5]:
     f3.metric("Short % Float",   _P(info.get("shortPercentOfFloat")))
     f4.metric("Dividend Yield",  _P(info.get("dividendYield")))
 
-# ══════════════════════════════════════════════════════════════════════
-# TAB 7 — NEWS & ANALYSTS
-# ══════════════════════════════════════════════════════════════════════
+# ======================================================================
+# TAB 7 - NEWS & ANALYSTS
+# ======================================================================
 with tabs[6]:
+    with st.spinner("Loading analyst data..."):
+        analyst_data = _fetch_analyst_data(ticker)
+
     rec_raw = (info.get("recommendationKey","") or "").replace("_"," ").upper()
-    t_lo, t_mn, t_hi = info.get("targetLowPrice"), info.get("targetMeanPrice"), info.get("targetHighPrice")
+    t_lo = info.get("targetLowPrice")
+    t_mn = info.get("targetMeanPrice")
+    t_hi = info.get("targetHighPrice")
+    n_ana = info.get("numberOfAnalystOpinions")
+    rc = {"STRONG BUY":"#26a69a","BUY":"#4caf50","HOLD":"#ffd700",
+          "SELL":"#f44336","STRONG SELL":"#ef5350"}.get(rec_raw,"#787b86")
 
-    st.markdown("#### Analyst Ratings")
-    a1, a2 = st.columns([1,2])
-    with a1:
-        if rec_raw:
-            rc = {"STRONG BUY":"#26a69a","BUY":"#4caf50","HOLD":"#ffd700",
-                  "SELL":"#f44336","STRONG SELL":"#ef5350"}.get(rec_raw,"#787b86")
+    # ── Consensus + Price Targets ──────────────────────────────────────
+    st.markdown("#### Analyst Ratings & Price Targets")
+    s1, s2, s3, s4 = st.columns(4)
+    if rec_raw:
+        s1.markdown(
+            f'<div style="background:#1e222d;border:1px solid {rc};border-radius:6px;padding:14px 16px;text-align:center;">'
+            f'<div style="color:#787b86;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;">Consensus</div>'
+            f'<div style="color:{rc};font-size:22px;font-weight:800;margin-top:6px;">{rec_raw}</div>'
+            f'<div style="color:#555;font-size:11px;margin-top:4px;">{n_ana or "?"} analysts</div>'
+            f'</div>', unsafe_allow_html=True)
+    if t_mn:
+        upside = (t_mn - price) / price * 100 if price else 0
+        s2.metric("Mean Target", f"${t_mn:.2f}", f"{upside:+.1f}% upside")
+    if t_lo:
+        s3.metric("Low Target",  f"${t_lo:.2f}")
+    if t_hi:
+        s4.metric("High Target", f"${t_hi:.2f}")
+
+    if t_lo and t_mn and t_hi:
+        rng = t_hi - t_lo
+        if rng > 0:
+            pos = max(0.0, min((price - t_lo) / rng, 1.0))
             st.markdown(
-                f'<div style="background:rgba(0,0,0,0.3);border:1px solid {rc};border-radius:6px;'
-                f'padding:12px 16px;display:inline-block;min-width:140px;">'
-                f'<div style="color:#787b86;font-size:10px;text-transform:uppercase;">Consensus</div>'
-                f'<div style="color:{rc};font-size:20px;font-weight:700;margin-top:4px;">{rec_raw}</div>'
-                f'</div>', unsafe_allow_html=True,
-            )
-        n = info.get("numberOfAnalystOpinions")
-        if n: st.markdown(f'<p style="color:#787b86;font-size:12px;margin-top:8px;">{n} analysts</p>', unsafe_allow_html=True)
+                f'<div style="display:flex;justify-content:space-between;color:#555;font-size:11px;margin-top:8px;margin-bottom:2px;">'
+                f'<span style="color:#ef5350;">Low ${t_lo:.2f}</span>'
+                f'<span style="color:#d1d4dc;">Current ${price:.2f}</span>'
+                f'<span style="color:#26a69a;">High ${t_hi:.2f}</span></div>',
+                unsafe_allow_html=True)
+            st.progress(pos)
 
-    with a2:
-        if t_mn and t_lo and t_hi:
-            upside = (t_mn - price) / price * 100
-            st.metric("Mean Price Target", f"${t_mn:.2f}", f"{upside:+.1f}% upside")
-            st.markdown(f'<span style="color:#787b86;font-size:12px;">Low <strong style="color:#ef5350;">${t_lo:.2f}</strong>'
-                        f' &nbsp;·&nbsp; Mean <strong style="color:#d1d4dc;">${t_mn:.2f}</strong>'
-                        f' &nbsp;·&nbsp; High <strong style="color:#26a69a;">${t_hi:.2f}</strong></span>',
-                        unsafe_allow_html=True)
-            rng = t_hi - t_lo
-            if rng > 0:
-                st.progress(max(0.0, min((price - t_lo) / rng, 1.0)))
+    # ── Forward Guidance ──────────────────────────────────────────────
+    fwd_eps = info.get("forwardEps")
+    fwd_pe  = info.get("forwardPE")
+    next_ed = analyst_data.get("next_earnings")
+    st.markdown("<hr style='border-color:#2a2e39;margin:14px 0;'>", unsafe_allow_html=True)
+    st.markdown("#### Forward Guidance")
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Forward EPS Est.", f"${fwd_eps:.2f}" if fwd_eps else "—")
+    g2.metric("Forward P/E",      f"{fwd_pe:.1f}x"  if fwd_pe  else "—")
+    g3.metric("EPS Growth Est.",  _P(info.get("earningsGrowth")))
+    if next_ed:
+        g4.metric("Next Earnings", next_ed["date"], "Upcoming")
+    else:
+        g4.metric("Revenue Growth Est.", _P(info.get("revenueGrowth")))
 
+    # ── Earnings History ──────────────────────────────────────────────
+    st.markdown("<hr style='border-color:#2a2e39;margin:14px 0;'>", unsafe_allow_html=True)
+    st.markdown("#### Earnings History — Beat / Miss")
+    earnings = analyst_data.get("earnings", [])
+    if not earnings:
+        st.caption("No earnings history available for this ticker.")
+    else:
+        hdr = st.columns([2,2,2,2,2])
+        for col, lbl in zip(hdr, ["Date","EPS Estimate","EPS Actual","Surprise %","Result"]):
+            col.markdown(f'<span style="color:#555;font-size:10px;text-transform:uppercase;">{lbl}</span>',
+                         unsafe_allow_html=True)
+        for row in earnings:
+            c1,c2,c3,c4,c5 = st.columns([2,2,2,2,2])
+            est  = row["eps_est"]
+            act  = row["eps_act"]
+            sur  = row["surprise"]
+            beat = row["beat"]
+            c1.markdown(f'<span style="color:#787b86;font-size:12px;">{row["date"]}</span>', unsafe_allow_html=True)
+            c2.markdown(f'<span style="color:#d1d4dc;font-size:13px;">{"$"+f"{est:.2f}" if est is not None else "—"}</span>', unsafe_allow_html=True)
+            c3.markdown(f'<span style="color:#d1d4dc;font-size:13px;font-weight:600;">{"$"+f"{act:.2f}" if act is not None else "—"}</span>', unsafe_allow_html=True)
+            sur_c = "#26a69a" if (sur or 0) >= 0 else "#ef5350"
+            c4.markdown(f'<span style="color:{sur_c};font-size:13px;font-weight:600;">{f"{sur:+.1f}%" if sur is not None else "—"}</span>', unsafe_allow_html=True)
+            if beat is True:
+                c5.markdown('<span style="color:#26a69a;font-size:13px;font-weight:700;">✓ BEAT</span>', unsafe_allow_html=True)
+            elif beat is False:
+                c5.markdown('<span style="color:#ef5350;font-size:13px;font-weight:700;">✗ MISS</span>', unsafe_allow_html=True)
+            else:
+                c5.markdown('<span style="color:#555;font-size:12px;">—</span>', unsafe_allow_html=True)
+            st.markdown('<div style="border-bottom:1px solid #1e222d;margin:2px 0;"></div>', unsafe_allow_html=True)
+
+    # ── Recent Analyst Actions ────────────────────────────────────────
+    recs = analyst_data.get("recommendations", [])
+    if recs:
+        st.markdown("<hr style='border-color:#2a2e39;margin:14px 0;'>", unsafe_allow_html=True)
+        st.markdown("#### Recent Analyst Actions")
+        for r in recs:
+            al = (r["action"] or "").lower()
+            a_color = ("#26a69a" if any(w in al for w in ["up","init","reit","main"])
+                       else ("#ef5350" if "down" in al else "#ffd700"))
+            from_to = f'{r["from"]} → {r["to"]}' if r["from"] and r["to"] else (r["to"] or r["from"] or "")
+            st.markdown(
+                f'<div style="display:flex;padding:7px 0;border-bottom:1px solid #1e222d;gap:12px;align-items:center;">'
+                f'<span style="color:#555;font-size:11px;min-width:110px;">{r["date"]}</span>'
+                f'<span style="color:#d1d4dc;font-size:13px;font-weight:600;min-width:160px;">{r["firm"]}</span>'
+                f'<span style="color:{a_color};font-size:12px;font-weight:700;min-width:110px;">{r["action"].title()}</span>'
+                f'<span style="color:#787b86;font-size:12px;">{from_to}</span>'
+                f'</div>', unsafe_allow_html=True)
+
+    # ── News ──────────────────────────────────────────────────────────
     st.markdown("<hr style='border-color:#2a2e39;margin:16px 0;'>", unsafe_allow_html=True)
     st.markdown("#### Recent News")
     if not news:
@@ -1223,12 +1363,11 @@ with tabs[6]:
             pub    = item.get("publisher","")
             ts_raw = item.get("providerPublishTime",0)
             link   = item.get("link","#")
-            try:    dt = datetime.datetime.fromtimestamp(ts_raw).strftime("%b %d · %I:%M %p")
-            except: dt = ""
+            try:    dt_str = datetime.datetime.fromtimestamp(ts_raw).strftime("%b %d · %I:%M %p")
+            except: dt_str = ""
             st.markdown(
                 f'<div style="padding:10px 0;border-bottom:1px solid #1e222d;">'
-                f'<a href="{link}" target="_blank" style="color:#d1d4dc;font-size:14px;font-weight:500;'
-                f'text-decoration:none;">{title}</a><br>'
-                f'<span style="color:#555;font-size:11px;">{pub} · {dt}</span></div>',
-                unsafe_allow_html=True,
-            )
+                f'<a href="{link}" target="_blank" style="color:#d1d4dc;font-size:14px;font-weight:500;text-decoration:none;">{title}</a><br>'
+                f'<span style="color:#555;font-size:11px;">{pub} · {dt_str}</span></div>',
+                unsafe_allow_html=True)
+
