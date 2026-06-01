@@ -226,7 +226,7 @@ def _fetch_news(ticker: str, company_name: str = "") -> list:
 def _load(ticker, period):
     t    = yf.Ticker(ticker)
     hist = _yf_with_retry(t.history, period=period, auto_adjust=True)
-    info = _yf_with_retry(lambda: t.info)
+    info = _yf_with_retry(lambda: t.info) or {}
     name = info.get("shortName") or info.get("longName") or ticker
     news = _fetch_news(ticker, name)
     return hist, info, news
