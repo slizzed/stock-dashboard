@@ -524,7 +524,7 @@ with st.sidebar:
     quick = [("NVDA","q1"),("AAPL","q2"),("TSLA","q3"),("SOUN","q4"),("IONQ","q5"),("PLTR","q6")]
     for i,(sym,k) in enumerate(quick):
         row = qrow1 if i < 3 else qrow2
-        if row[i%3].button(sym, key=k, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False}):
+        if row[i%3].button(sym, key=k, use_container_width=True):
             ticker = sym
 
     st.markdown("<hr style='border-color:#2a2e39;margin:10px 0;'>", unsafe_allow_html=True)
