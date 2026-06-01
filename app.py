@@ -1,4 +1,5 @@
 import datetime
+import json
 import math
 import time
 import urllib.parse
@@ -9,19 +10,17 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.graph_objects as go
 import requests
-import requests_cache
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 
-# Cached session — reduces repeated requests and helps bypass rate limits
-_YF_SESSION = requests_cache.CachedSession("yf_cache", expire_after=300)
+# Plain session with browser User-Agent to help with Yahoo Finance
+_YF_SESSION = requests.Session()
 _YF_SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 })
 
@@ -287,33 +286,42 @@ def _bb(c, n=20, w=2.0):
     mid = c.rolling(n).mean(); sd = c.rolling(n).std()
     return mid, mid + w*sd, mid - w*sd
 
-# ── Weekly picks universe ─────────────────────────────────────────────────────
-SCAN_UNIVERSE = [
+# ── Hardcoded fallback universe (used if EDGAR fetch fails) ───────────────────
+_FALLBACK_UNIVERSE = [
     "NVDA","AMD","INTC","MU","MRVL","SMCI","NVTS","AVGO","ARM","TSM",
-    "IONQ","QBTS","RGTI","QUBT","ARQQ","IBM",
-    "ENPH","SEDG","FSLR","RUN","ARRY","FLNC","MAXN","TAN",
-    "RKLB","ASTS","LUNR","RDW","ACHR","JOBY","SPCE","BA","GE",
-    "PLTR","SOUN","BBAI","AI","KULR","SERV","IREN","WULF","GFAI",
-    "BB","NOK","ERIC","LUMN",
-    "TSLA","RIVN","LCID","CHPT","BLNK","EVGO","NIO","XPEV","LI",
-    "MARA","RIOT","HUT","CIFR","BITF","MIGI","COIN","HOOD","SOFI",
-    "AAPL","MSFT","GOOGL","META","AMZN","NFLX","PYPL","SQ","AFRM",
-    "SNAP","PINS","UBER","LYFT","ABNB","DASH","GME","AMC","SKLZ",
-    "DPRO","MARK","NNDM","CLOV","WKHS","OPEN","MVST","BFLY","ATER",
-]
-
-TODAY_UNIVERSE = [
-    "SOUN","BBAI","IONQ","QBTS","RGTI","QUBT","RKLB","ASTS","LUNR","ACHR","JOBY",
-    "KULR","SERV","IREN","WULF","PLTR","AI","NVTS","ARRY","FLNC","RUN","SEDG","MAXN",
-    "BB","NOK","ERIC","LUMN","RIVN","LCID","CHPT","BLNK","EVGO","NIO","XPEV","LI",
-    "MARA","RIOT","HUT","CIFR","COIN","HOOD","SOFI","AFRM","SNAP","DPRO","GFAI","CLOV",
-    "NVDA","AMD","TSLA","AAPL","META","AMZN","MSFT","GOOGL","AVGO","ARM","SMCI","MRVL",
+    "IONQ","QBTS","RGTI","QUBT","ARQQ","IBM","ENPH","SEDG","FSLR","RUN",
+    "ARRY","FLNC","MAXN","TAN","RKLB","ASTS","LUNR","RDW","ACHR","JOBY",
+    "SPCE","BA","GE","PLTR","SOUN","BBAI","AI","KULR","SERV","IREN","WULF",
+    "GFAI","BB","NOK","ERIC","LUMN","TSLA","RIVN","LCID","CHPT","BLNK",
+    "EVGO","NIO","XPEV","LI","MARA","RIOT","HUT","CIFR","BITF","MIGI",
+    "COIN","HOOD","SOFI","AAPL","MSFT","GOOGL","META","AMZN","NFLX","PYPL",
+    "SQ","AFRM","SNAP","PINS","UBER","LYFT","ABNB","DASH","GME","AMC",
 ]
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=86400)
+def _fetch_all_tickers() -> list:
+    """Fetch all NYSE+NASDAQ tickers from SEC EDGAR. Cached 24h."""
+    try:
+        req = urllib.request.Request(
+            "https://www.sec.gov/files/company_tickers.json",
+            headers={"User-Agent": "stockdashboard/1.0 mattyicemoney@gmail.com"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read())
+        tickers = sorted(set(
+            v["ticker"].upper()
+            for v in data.values()
+            if v.get("ticker") and v["ticker"].isalpha() and 1 <= len(v["ticker"]) <= 5
+        ))
+        return tickers if tickers else _FALLBACK_UNIVERSE
+    except Exception:
+        return _FALLBACK_UNIVERSE
+
+
+@st.cache_data(ttl=600)
 def _today_scan() -> list:
-    syms = list(dict.fromkeys(TODAY_UNIVERSE))
+    syms = list(dict.fromkeys(_fetch_all_tickers()))
     try:
         df = yf.download(" ".join(syms), period="5d", auto_adjust=True,
                          progress=False, threads=True, group_by="ticker")
@@ -380,9 +388,9 @@ def _quick_score(close, lrsi, lmacd, lsig, lma20, lma50):
     return score
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def _weekly_scan():
-    syms = list(dict.fromkeys(SCAN_UNIVERSE))
+    syms = list(dict.fromkeys(_fetch_all_tickers()))
     try:
         df = yf.download(" ".join(syms), period="21d", auto_adjust=True,
                          progress=False, threads=True, group_by="ticker")
