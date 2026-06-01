@@ -656,17 +656,65 @@ with tabs[0]:
     fig.add_trace(go.Bar(x=hist.index, y=vol_down, name="Vol ▼",
         marker_color="rgba(239,83,80,0.5)",  showlegend=False), row=2, col=1)
 
+    # Current price line (like TradingView's last price marker)
+    fig.add_hline(y=price, line_color="#ffd700", line_dash="dash", line_width=0.8,
+                  annotation_text=f"  ${price:.2f}", annotation_position="right",
+                  annotation_font_color="#ffd700", annotation_font_size=11, row=1, col=1)
+
     fig.update_layout(
-        **TV, height=580,
-        xaxis_rangeslider_visible=False,
+        plot_bgcolor="#131722", paper_bgcolor="#131722",
+        font=dict(color="#787b86", family="Trebuchet MS,sans-serif", size=11),
+        height=620,
+        dragmode="pan",
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor="#1e222d", font_color="#d1d4dc", bordercolor="#2a2e39"),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#787b86", size=11),
+                    orientation="h", yanchor="bottom", y=1.01, x=0),
+        margin=dict(l=0, r=70, t=8, b=0),
+        barmode="overlay",
+        xaxis=dict(
+            gridcolor="#1e222d", linecolor="#2a2e39", showgrid=True,
+            zeroline=False, tickcolor="#787b86", tickfont=dict(color="#787b86"),
+            rangeslider=dict(visible=False),
+            showspikes=True, spikemode="across", spikesnap="cursor",
+            spikecolor="#555555", spikethickness=1, spikedash="solid",
+            rangeselector=dict(
+                buttons=[
+                    dict(count=5,  label="5D",  step="day",   stepmode="backward"),
+                    dict(count=1,  label="1M",  step="month", stepmode="backward"),
+                    dict(count=3,  label="3M",  step="month", stepmode="backward"),
+                    dict(count=6,  label="6M",  step="month", stepmode="backward"),
+                    dict(count=1,  label="1Y",  step="year",  stepmode="backward"),
+                    dict(step="all", label="All"),
+                ],
+                bgcolor="#1e222d", activecolor="#2962ff", bordercolor="#2a2e39",
+                font=dict(color="#d1d4dc", size=11), x=0, y=1.02,
+            ),
+        ),
+        yaxis=dict(
+            gridcolor="#1e222d", linecolor="#2a2e39", showgrid=True,
+            zeroline=False, tickcolor="#787b86", tickfont=dict(color="#787b86"),
+            side="right", tickprefix="$", tickformat=",.2f",
+            showspikes=True, spikemode="across", spikesnap="cursor",
+            spikecolor="#555555", spikethickness=1, spikedash="solid",
+        ),
         xaxis2=dict(gridcolor="#1e222d", linecolor="#2a2e39", tickcolor="#787b86",
-                    tickfont=dict(color="#787b86")),
+                    tickfont=dict(color="#787b86"),
+                    showspikes=True, spikemode="across", spikesnap="cursor",
+                    spikecolor="#555555", spikethickness=1),
         yaxis2=dict(gridcolor="#1e222d", linecolor="#2a2e39", side="right",
                     tickcolor="#787b86", tickfont=dict(color="#787b86")),
-        barmode="overlay",
     )
-    fig.update_yaxes(tickprefix="$", tickformat=",.2f", row=1, col=1)
-    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False})
+
+    CHART_CONFIG = {
+        "scrollZoom": True,
+        "displayModeBar": True,
+        "modeBarButtonsToRemove": ["select2d", "lasso2d", "autoScale2d", "hoverCompareCartesian"],
+        "modeBarButtonsToAdd":    ["drawline", "drawopenpath", "drawrect", "eraseshape"],
+        "doubleClick":            "reset+autosize",
+        "toImageButtonOptions":   {"format": "png", "width": 1400, "height": 700},
+    }
+    st.plotly_chart(fig, use_container_width=True, config=CHART_CONFIG)
 
     lo52  = info.get("fiftyTwoWeekLow")
     hi52  = info.get("fiftyTwoWeekHigh")
