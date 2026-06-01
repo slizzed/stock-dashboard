@@ -1,5 +1,6 @@
 import datetime
 import math
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -12,6 +13,20 @@ import streamlit.components.v1 as components
 import yfinance as yf
 from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
+
+
+def _yf_with_retry(fn, *args, retries=3, **kwargs):
+    """Call a yfinance function with exponential backoff on rate limit errors."""
+    for attempt in range(retries):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if "too many requests" in str(e).lower() or "rate limit" in str(e).lower():
+                if attempt < retries - 1:
+                    time.sleep(5 * (2 ** attempt))
+                    continue
+            raise
+    raise Exception("Rate limited after retries — try again in a moment.")
 
 st.set_page_config(
     page_title="Stock Dashboard",
@@ -210,8 +225,8 @@ def _fetch_news(ticker: str, company_name: str = "") -> list:
 @st.cache_data(ttl=55)
 def _load(ticker, period):
     t    = yf.Ticker(ticker)
-    hist = t.history(period=period, auto_adjust=True)
-    info = t.info
+    hist = _yf_with_retry(t.history, period=period, auto_adjust=True)
+    info = _yf_with_retry(lambda: t.info)
     name = info.get("shortName") or info.get("longName") or ticker
     news = _fetch_news(ticker, name)
     return hist, info, news
@@ -283,11 +298,7 @@ def _today_scan() -> list:
         except Exception:
             continue
     picks.sort(key=lambda x: x["score"], reverse=True)
-    top = picks[:10]
-    for p in top:
-        try: p["name"] = yf.Ticker(p["symbol"]).info.get("shortName") or p["symbol"]
-        except: pass
-    return top
+    return picks[:10]
 
 
 SECTOR_ETFS = {
@@ -369,21 +380,7 @@ def _weekly_scan():
             continue
 
     picks.sort(key=lambda x: x["score"], reverse=True)
-    top = picks[:10]
-    for p in top:
-        try:
-            inf = yf.Ticker(p["symbol"]).fast_info
-            p["name"] = p["symbol"]
-        except Exception:
-            pass
-    # Enrich names
-    for p in top:
-        try:
-            p["name"] = yf.Ticker(p["symbol"]).info.get("shortName") or p["symbol"]
-            p["sector"] = yf.Ticker(p["symbol"]).info.get("sector","")
-        except Exception:
-            pass
-    return top
+    return picks[:10]
 
 
 @st.cache_data(ttl=120)
