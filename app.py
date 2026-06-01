@@ -321,23 +321,26 @@ def _fetch_all_tickers() -> list:
 
 @st.cache_data(ttl=600)
 def _today_scan() -> list:
-    syms = list(dict.fromkeys(_fetch_all_tickers()))
+    """Two-stage scan: fast 5d pre-screen across full market, return top movers."""
+    all_syms = list(dict.fromkeys(_fetch_all_tickers()))
     try:
-        df = yf.download(" ".join(syms), period="5d", auto_adjust=True,
+        df = yf.download(" ".join(all_syms), period="5d", auto_adjust=True,
                          progress=False, threads=True, group_by="ticker")
     except Exception:
         return []
+    is_single = len(all_syms) == 1
     picks = []
-    for sym in syms:
+    for sym in all_syms:
         try:
-            sym_df = df if len(syms)==1 else (df[sym] if sym in df.columns.get_level_values(0) else None)
+            sym_df = df if is_single else (df[sym] if sym in df.columns.get_level_values(0) else None)
             if sym_df is None or sym_df.empty or len(sym_df) < 2: continue
             close = sym_df["Close"].dropna(); vol = sym_df["Volume"].dropna()
             price = float(close.iloc[-1]); prev = float(close.iloc[-2])
-            if price <= 0 or prev <= 0: continue
+            if price < 1.0 or prev <= 0: continue
             day_pct = (price - prev) / prev * 100
             if day_pct < 0.5: continue
-            avg_vol   = float(vol.iloc[:-1].mean()) if len(vol) > 1 else float(vol.iloc[-1])
+            avg_vol = float(vol.iloc[:-1].mean()) if len(vol) > 1 else float(vol.iloc[-1])
+            if avg_vol < 100_000: continue
             vol_ratio = float(vol.iloc[-1]) / avg_vol if avg_vol > 0 else 1
             rsi_val   = float(_rsi(close).dropna().iloc[-1]) if not _rsi(close).dropna().empty else 50
             score     = min(day_pct*3,40) + min(vol_ratio/3*30,30) + (10 if 40<=rsi_val<=65 else 0)
@@ -347,7 +350,7 @@ def _today_scan() -> list:
         except Exception:
             continue
     picks.sort(key=lambda x: x["score"], reverse=True)
-    return picks[:10]
+    return picks[:15]
 
 
 SECTOR_ETFS = {
@@ -390,23 +393,56 @@ def _quick_score(close, lrsi, lmacd, lsig, lma20, lma50):
 
 @st.cache_data(ttl=3600)
 def _weekly_scan():
-    syms = list(dict.fromkeys(_fetch_all_tickers()))
+    """Two-stage scan: 5d pre-screen across full market, then 3mo deep analysis on top 300."""
+    all_syms = list(dict.fromkeys(_fetch_all_tickers()))
+
+    # Stage 1: fast 5-day download to find weekly movers
     try:
-        df = yf.download(" ".join(syms), period="21d", auto_adjust=True,
+        df_fast = yf.download(" ".join(all_syms), period="5d", auto_adjust=True,
+                              progress=False, threads=True, group_by="ticker")
+    except Exception:
+        return []
+
+    is_single = len(all_syms) == 1
+    candidates = []
+    for sym in all_syms:
+        try:
+            sym_df = df_fast if is_single else (df_fast[sym] if sym in df_fast.columns.get_level_values(0) else None)
+            if sym_df is None or sym_df.empty or len(sym_df) < 2: continue
+            close = sym_df["Close"].dropna()
+            vol   = sym_df["Volume"].dropna()
+            price = float(close.iloc[-1]); prev = float(close.iloc[0])
+            if price < 1.0 or prev <= 0: continue
+            avg_vol = float(vol.mean()) if not vol.empty else 0
+            if avg_vol < 100_000: continue
+            week_pct = (price - prev) / prev * 100
+            candidates.append((sym, week_pct))
+        except Exception:
+            continue
+
+    if not candidates:
+        return []
+
+    # Keep top 300 weekly gainers for deep analysis
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    top_syms = [s for s, _ in candidates[:300]]
+
+    # Stage 2: 3-month data for proper MA20/MA50/RSI/MACD on candidates
+    try:
+        df = yf.download(" ".join(top_syms), period="3mo", auto_adjust=True,
                          progress=False, threads=True, group_by="ticker")
     except Exception:
         return []
 
+    is_single2 = len(top_syms) == 1
     picks = []
-    for sym in syms:
+    for sym in top_syms:
         try:
-            sym_df = df if len(syms) == 1 else (df[sym] if sym in df.columns.get_level_values(0) else None)
-            if sym_df is None or sym_df.empty or len(sym_df) < 10:
-                continue
-            close  = sym_df["Close"].dropna()
-            price  = float(close.iloc[-1])
-            if not (0.50 <= price <= 999):
-                continue
+            sym_df = df if is_single2 else (df[sym] if sym in df.columns.get_level_values(0) else None)
+            if sym_df is None or sym_df.empty or len(sym_df) < 10: continue
+            close = sym_df["Close"].dropna()
+            price = float(close.iloc[-1])
+            if price < 0.50: continue
             ma20 = close.rolling(20).mean(); ma50 = close.rolling(50).mean()
             lma20 = float(ma20.dropna().iloc[-1]) if not ma20.dropna().empty else price
             lma50 = float(ma50.dropna().iloc[-1]) if not ma50.dropna().empty else price
@@ -415,13 +451,12 @@ def _weekly_scan():
             lmacd = float(ml.dropna().iloc[-1]) if not ml.dropna().empty else 0
             lsig  = float(sl.dropna().iloc[-1]) if not sl.dropna().empty else 0
             score = _quick_score(close, lrsi, lmacd, lsig, lma20, lma50)
-            if score < 2:
-                continue
-            prev5     = float(close.iloc[-6]) if len(close) >= 6 else float(close.iloc[0])
-            week_pct  = round((price - prev5) / prev5 * 100, 2)
-            entry     = round(min(price, lma20) * 0.997, 2)
-            stop      = round(lma50 * 0.97, 2)
-            target    = round(price * 1.15, 2)
+            if score < 2: continue
+            prev5    = float(close.iloc[-6]) if len(close) >= 6 else float(close.iloc[0])
+            week_pct = round((price - prev5) / prev5 * 100, 2)
+            entry    = round(min(price, lma20) * 0.997, 2)
+            stop     = round(lma50 * 0.97, 2)
+            target   = round(price * 1.15, 2)
             picks.append(dict(symbol=sym, price=round(price,2), week_pct=week_pct,
                               score=score, rsi=round(lrsi,1), ma20=round(lma20,2),
                               entry=entry, stop=stop, target=target, name=sym, sector=""))
@@ -429,7 +464,7 @@ def _weekly_scan():
             continue
 
     picks.sort(key=lambda x: x["score"], reverse=True)
-    return picks[:10]
+    return picks[:15]
 
 
 @st.cache_data(ttl=120)
