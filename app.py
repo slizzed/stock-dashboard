@@ -524,7 +524,7 @@ with st.sidebar:
     quick = [("NVDA","q1"),("AAPL","q2"),("TSLA","q3"),("SOUN","q4"),("IONQ","q5"),("PLTR","q6")]
     for i,(sym,k) in enumerate(quick):
         row = qrow1 if i < 3 else qrow2
-        if row[i%3].button(sym, key=k, use_container_width=True):
+        if row[i%3].button(sym, key=k, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False}):
             ticker = sym
 
     st.markdown("<hr style='border-color:#2a2e39;margin:10px 0;'>", unsafe_allow_html=True)
@@ -666,7 +666,7 @@ with tabs[0]:
         barmode="overlay",
     )
     fig.update_yaxes(tickprefix="$", tickformat=",.2f", row=1, col=1)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False})
 
     lo52  = info.get("fiftyTwoWeekLow")
     hi52  = info.get("fiftyTwoWeekHigh")
@@ -929,7 +929,7 @@ with tabs[3]:
             hoverlabel=dict(bgcolor="#1e222d", font_color="#d1d4dc"),
         )
         fig_sec_d.update_layout(**_sector_layout_today)
-        sc1.plotly_chart(fig_sec_d, use_container_width=True)
+        sc1.plotly_chart(fig_sec_d, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False})
 
         # This week
         week_data = [(n, d.get("week_pct") or 0) for n, d in sectors.items()]
@@ -957,7 +957,7 @@ with tabs[3]:
             hoverlabel=dict(bgcolor="#1e222d", font_color="#d1d4dc"),
         )
         fig_sec_w.update_layout(**_sector_layout_week)
-        sc2.plotly_chart(fig_sec_w, use_container_width=True)
+        sc2.plotly_chart(fig_sec_w, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False})
 
         # Hot / Cold sectors
         today_sorted = sorted(sectors.items(), key=lambda x: x[1].get("day_pct") or 0, reverse=True)
@@ -1013,7 +1013,7 @@ with tabs[4]:
         xaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",tickfont=dict(color="#787b86"),rangeslider_visible=False),
         yaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",side="right",tickprefix="$"))
     fig_bb.update_yaxes(tickprefix="$")
-    st.plotly_chart(fig_bb, use_container_width=True)
+    st.plotly_chart(fig_bb, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False})
 
     fig_rsi = go.Figure()
     fig_rsi.add_hrect(y0=70, y1=100, fillcolor="rgba(239,83,80,0.06)", line_width=0)
@@ -1034,7 +1034,7 @@ with tabs[4]:
         title=dict(text="RSI (14)",font=dict(color="#787b86",size=12)),
         xaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",tickfont=dict(color="#787b86")),
         yaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",side="right",range=[0,100]))
-    st.plotly_chart(fig_rsi, use_container_width=True)
+    st.plotly_chart(fig_rsi, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False})
 
     hc = ["rgba(38,166,154,0.7)" if v >= 0 else "rgba(239,83,80,0.7)" for v in macd_h.fillna(0)]
     fig_macd = go.Figure()
@@ -1051,7 +1051,7 @@ with tabs[4]:
         title=dict(text="MACD (12, 26, 9)",font=dict(color="#787b86",size=12)),
         xaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",tickfont=dict(color="#787b86")),
         yaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",showgrid=True,zeroline=False,tickcolor="#787b86",side="right"))
-    st.plotly_chart(fig_macd, use_container_width=True)
+    st.plotly_chart(fig_macd, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False})
 
 # ══════════════════════════════════════════════════════════════════════
 # TAB 6 — FUNDAMENTALS
