@@ -60,6 +60,9 @@ st.markdown("""
 
 st_autorefresh(interval=60_000, limit=None, key="live_refresh")
 
+if "ticker" not in st.session_state:
+    st.session_state.ticker = "NVDA"
+
 # ── Chart theme (TradingView colors) ──────────────────────────────────────────
 TV = dict(
     plot_bgcolor="#131722", paper_bgcolor="#131722",
@@ -510,9 +513,11 @@ with st.sidebar:
 
     st.markdown("<hr style='border-color:#2a2e39;margin:10px 0;'>", unsafe_allow_html=True)
 
-    raw = st.text_input("", value="NVDA", placeholder="Enter ticker…",
-                        label_visibility="collapsed")
-    ticker = raw.upper().strip()
+    raw = st.text_input("", value=st.session_state.ticker, placeholder="Enter ticker…",
+                        label_visibility="collapsed", key="ticker_input")
+    if raw.upper().strip() and raw.upper().strip() != st.session_state.ticker:
+        st.session_state.ticker = raw.upper().strip()
+    ticker = st.session_state.ticker
 
     period_label = st.selectbox("Period", ["1M","3M","6M","1Y","2Y","5Y"], index=3,
                                 label_visibility="visible")
@@ -531,35 +536,34 @@ with st.sidebar:
 
     pick_tab = st.radio("", ["📅 This Week", "⚡ Today"], horizontal=True, label_visibility="collapsed")
 
-    def _pick_row(rank, p, pct_key):
-        pct  = p.get(pct_key, 0) or 0
+    def _pick_btn(rank, p, pct_key):
         sym  = p.get("symbol","")
+        pct  = p.get(pct_key, 0) or 0
         pr   = p.get("price", 0)
-        name = (p.get("name") or sym)[:18]
         c    = "#26a69a" if pct >= 0 else "#ef5350"
         s    = "+" if pct >= 0 else ""
-        st.markdown(
-            f"<div style='display:flex;align-items:center;padding:6px 4px;border-bottom:1px solid #1e222d;gap:6px;'>"
-            f"<span style='color:#555;font-size:10px;min-width:16px;'>#{rank}</span>"
-            f"<div style='flex:1;min-width:0;'><span style='color:#d1d4dc;font-size:13px;font-weight:700;'>{sym}</span>"
-            f"<br><span style='color:#555;font-size:9px;'>{name}</span></div>"
-            f"<div style='text-align:right;'><span style='color:#d1d4dc;font-size:12px;'>${pr:.2f}</span><br>"
-            f"<span style='color:{c};font-size:11px;font-weight:600;'>{s}{pct:.1f}%</span></div></div>",
-            unsafe_allow_html=True,
-        )
+        col1, col2 = st.columns([3, 2])
+        with col1:
+            st.markdown(f"<span style='color:#d1d4dc;font-weight:700;font-size:13px;'>{sym}</span>", unsafe_allow_html=True)
+        with col2:
+            st.markdown(f"<span style='color:{c};font-size:11px;'>{s}{pct:.1f}%</span>", unsafe_allow_html=True)
+        if st.button(f"Open {sym}", key=f"pick_{rank}_{sym}_{pct_key}", use_container_width=True):
+            st.session_state.ticker = sym
+            st.rerun()
+        st.markdown("<div style='margin-bottom:-8px;'></div>", unsafe_allow_html=True)
 
     if pick_tab == "📅 This Week":
         with st.spinner("Scanning…"):
             wpicks = _weekly_scan()
         if wpicks:
-            for i, p in enumerate(wpicks, 1): _pick_row(i, p, "week_pct")
+            for i, p in enumerate(wpicks, 1): _pick_btn(i, p, "week_pct")
         else:
             st.caption("No bullish picks found.")
     else:
         with st.spinner("Scanning today…"):
             dpicks = _today_scan()
         if dpicks:
-            for i, p in enumerate(dpicks, 1): _pick_row(i, p, "day_pct")
+            for i, p in enumerate(dpicks, 1): _pick_btn(i, p, "day_pct")
         else:
             st.caption("No strong movers yet today.")
 
@@ -803,80 +807,114 @@ with tabs[1]:
     )
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 3 — THIS WEEK'S PICKS
+# TAB 3 — THIS WEEK (weekly analysis of current ticker)
 # ══════════════════════════════════════════════════════════════════════
 with tabs[2]:
-    st.markdown("<p style='color:#787b86;font-size:12px;'>Scans 80+ stocks · scored on RSI, MACD, MA alignment, momentum · cached 30 min</p>",
-                unsafe_allow_html=True)
+    today_et  = datetime.datetime.now()
+    weekday_n = today_et.weekday()
+    week_start_dt = (today_et - datetime.timedelta(days=weekday_n)).date()
+    mask_wk   = [d.date() >= week_start_dt for d in hist.index]
+    week_df   = hist[mask_wk] if any(mask_wk) else hist.iloc[-5:]
 
-    with st.spinner("Scanning market for this week's best setups…"):
-        weekly_picks = _weekly_scan()
+    wk_open  = float(week_df["Open"].iloc[0])   if not week_df.empty else price
+    wk_high  = float(week_df["High"].max())      if not week_df.empty else price
+    wk_low   = float(week_df["Low"].min())       if not week_df.empty else price
+    wk_pct   = (price - wk_open) / wk_open * 100 if wk_open else 0
+    wk_sign  = "+" if wk_pct >= 0 else ""
+    wk_color = "#26a69a" if wk_pct >= 0 else "#ef5350"
 
-    if not weekly_picks:
-        st.warning("No strongly bullish picks found right now. Market may be in a bearish phase.")
-    else:
-        scan_time = datetime.datetime.now().strftime("%I:%M %p")
-        st.markdown(f"<p style='color:#555;font-size:11px;margin-bottom:12px;'>Last scanned: {scan_time}</p>",
-                    unsafe_allow_html=True)
-        for rank, p in enumerate(weekly_picks, 1):
-            sym      = p["symbol"]
-            name     = p.get("name", sym)
-            price    = p["price"]
-            wpct     = p["week_pct"]
-            score    = p["score"]
-            entry    = p["entry"]
-            stop     = p["stop"]
-            target   = p["target"]
-            rsi_v    = p["rsi"]
-            sector_v = p.get("sector","")
-            upside   = round((target - price) / price * 100, 1)
-            risk_p   = round((price - stop) / price * 100, 1)
-            wcolor   = "#26a69a" if wpct >= 0 else "#ef5350"
-            wsign    = "+" if wpct >= 0 else ""
-            score_c  = "#26a69a" if score >= 4 else ("#4caf50" if score >= 2 else "#ffd700")
+    lw_mask  = [d.date() < week_start_dt for d in hist.index]
+    lw_df    = hist[lw_mask].iloc[-5:] if any(lw_mask) else pd.DataFrame()
+    lw_pct   = None
+    if not lw_df.empty:
+        lw_o = float(lw_df["Open"].iloc[0]); lw_c = float(lw_df["Close"].iloc[-1])
+        lw_pct = round((lw_c - lw_o) / lw_o * 100, 2) if lw_o else None
 
-            st.markdown(
-                f'<div style="background:#1e222d;border:1px solid #2a2e39;border-left:3px solid {score_c};'
-                f'border-radius:6px;padding:14px 18px;margin-bottom:10px;display:flex;align-items:center;gap:0;">'
+    st.markdown(f"### This Week — {name} `{ticker}`")
+    w1, w2, w3, w4, w5 = st.columns(5)
+    w1.metric("Week Open",   f"${wk_open:.2f}")
+    w2.metric("Week High",   f"${wk_high:.2f}")
+    w3.metric("Week Low",    f"${wk_low:.2f}")
+    w4.metric("Week Change", f"{wk_sign}{wk_pct:.2f}%",
+              delta=f"vs last wk {('+' if (lw_pct or 0)>=0 else '')}{lw_pct:.1f}%" if lw_pct else None)
+    w5.metric("Current",     f"${price:.2f}")
+    st.markdown("<hr style='border-color:#2a2e39;margin:12px 0;'>", unsafe_allow_html=True)
 
-                f'<div style="min-width:32px;color:#555;font-size:13px;font-weight:700;">#{rank}</div>'
+    # 4-week daily chart
+    hist_4w = hist.iloc[-20:] if len(hist) >= 20 else hist
+    fig_wk = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                           vertical_spacing=0.04, row_heights=[0.75, 0.25])
+    fig_wk.add_trace(go.Candlestick(
+        x=hist_4w.index, open=hist_4w["Open"], high=hist_4w["High"],
+        low=hist_4w["Low"], close=hist_4w["Close"],
+        increasing=dict(line=dict(color="#26a69a",width=1), fillcolor="#26a69a"),
+        decreasing=dict(line=dict(color="#ef5350",width=1), fillcolor="#ef5350"),
+        showlegend=False,
+    ), row=1, col=1)
+    if not week_df.empty and len(week_df) >= 1:
+        fig_wk.add_vrect(x0=week_df.index[0], x1=week_df.index[-1],
+                         fillcolor="rgba(41,98,255,0.07)", line_width=0)
+    fig_wk.add_hline(y=price, line_color="#ffd700", line_dash="dash", line_width=0.8,
+                     annotation_text=f"  ${price:.2f}", annotation_position="right",
+                     annotation_font_color="#ffd700", row=1, col=1)
+    vc4w = ["rgba(38,166,154,0.5)" if float(c)>=float(o) else "rgba(239,83,80,0.5)"
+            for c,o in zip(hist_4w["Close"], hist_4w["Open"])]
+    fig_wk.add_trace(go.Bar(x=hist_4w.index, y=hist_4w["Volume"],
+                            marker_color=vc4w, showlegend=False), row=2, col=1)
+    fig_wk.update_layout(
+        plot_bgcolor="#131722", paper_bgcolor="#131722", height=380, dragmode="pan",
+        font=dict(color="#787b86",family="Trebuchet MS,sans-serif",size=11),
+        margin=dict(l=0,r=70,t=8,b=0), hovermode="x unified",
+        hoverlabel=dict(bgcolor="#1e222d",font_color="#d1d4dc"),
+        xaxis_rangeslider_visible=False,
+        xaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",tickfont=dict(color="#787b86"),
+                   showspikes=True,spikecolor="#555",spikethickness=1),
+        yaxis=dict(gridcolor="#1e222d",linecolor="#2a2e39",side="right",
+                   tickprefix="$",tickformat=",.2f",tickfont=dict(color="#787b86"),
+                   showspikes=True,spikecolor="#555",spikethickness=1),
+        xaxis2=dict(gridcolor="#1e222d",linecolor="#2a2e39",tickfont=dict(color="#787b86")),
+        yaxis2=dict(gridcolor="#1e222d",linecolor="#2a2e39",side="right",tickfont=dict(color="#787b86")),
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
+    )
+    st.plotly_chart(fig_wk, use_container_width=True, config={"scrollZoom":True,"displayModeBar":False})
+    st.markdown("<hr style='border-color:#2a2e39;margin:12px 0;'>", unsafe_allow_html=True)
 
-                f'<div style="min-width:180px;">'
-                f'<span style="color:#d1d4dc;font-size:15px;font-weight:700;">{sym}</span>'
-                f'<span style="color:#555;font-size:11px;margin-left:8px;">{name[:22]}</span><br>'
-                f'<span style="color:#555;font-size:10px;">{sector_v}</span>'
-                f'</div>'
+    lma20_w = float(close.rolling(20).mean().dropna().iloc[-1]) if len(close)>=20 else price
+    lma50_w = float(close.rolling(50).mean().dropna().iloc[-1]) if len(close)>=50 else price
+    lrsi_w  = float(rsi_s.dropna().iloc[-1]) if not rsi_s.dropna().empty else 50
+    wk_vol  = int(week_df["Volume"].sum()) if not week_df.empty and "Volume" in week_df else 0
+    avg_wvol = int(hist["Volume"].mean()) * 5 if "Volume" in hist else 1
+    vol_surp = round(wk_vol / avg_wvol * 100 - 100, 0) if avg_wvol else 0
 
-                f'<div style="min-width:100px;">'
-                f'<div style="color:#d1d4dc;font-size:15px;font-weight:600;">${price:.2f}</div>'
-                f'<div style="color:{wcolor};font-size:12px;">{wsign}{wpct:.1f}% wk</div>'
-                f'</div>'
+    kl1, kl2 = st.columns(2)
+    with kl1:
+        st.markdown("#### Key Levels")
+        resistance = info.get("fiftyTwoWeekHigh", wk_high)
+        st.markdown(
+            f'<div style="background:#1e222d;border:1px solid #2a2e39;border-radius:6px;padding:14px 18px;">'
+            f'<div style="margin-bottom:10px;"><span style="color:#787b86;font-size:11px;">RESISTANCE</span><br>'
+            f'<span style="color:#ef5350;font-size:16px;font-weight:700;">${resistance:.2f}</span>'
+            f'<span style="color:#555;font-size:11px;margin-left:8px;">52W High</span></div>'
+            f'<div style="margin-bottom:10px;"><span style="color:#787b86;font-size:11px;">KEY SUPPORT</span><br>'
+            f'<span style="color:#26a69a;font-size:16px;font-weight:700;">${lma50_w:.2f}</span>'
+            f'<span style="color:#555;font-size:11px;margin-left:8px;">MA50</span></div>'
+            f'<div><span style="color:#787b86;font-size:11px;">WEEK TARGET (+8%)</span><br>'
+            f'<span style="color:#ffd700;font-size:16px;font-weight:700;">${price*1.08:.2f}</span></div>'
+            f'</div>', unsafe_allow_html=True)
+    with kl2:
+        st.markdown("#### Weekly Signals")
+        if price > lma20_w: st.markdown(f"🟢 &nbsp; Above MA20 ${lma20_w:.2f} — momentum intact")
+        else:               st.markdown(f"🔴 &nbsp; Below MA20 ${lma20_w:.2f} — under pressure")
+        if lrsi_w < 35:     st.markdown(f"🟢 &nbsp; RSI {lrsi_w:.0f} — oversold, watch for bounce")
+        elif lrsi_w > 68:   st.markdown(f"🔴 &nbsp; RSI {lrsi_w:.0f} — overbought, take profits")
+        else:               st.markdown(f"🟡 &nbsp; RSI {lrsi_w:.0f} — healthy momentum range")
+        if vol_surp > 20:   st.markdown(f"🟢 &nbsp; Volume +{vol_surp:.0f}% above weekly average")
+        elif vol_surp < -20:st.markdown(f"🔴 &nbsp; Volume {vol_surp:.0f}% below average — low interest")
+        else:               st.markdown(f"🟡 &nbsp; Volume near average this week")
+        if wk_pct > 0:      st.markdown(f"🟢 &nbsp; Up {wk_pct:.1f}% this week — bullish weekly candle")
+        else:               st.markdown(f"🔴 &nbsp; Down {abs(wk_pct):.1f}% this week — bearish weekly candle")
 
-                f'<div style="min-width:90px;text-align:center;">'
-                f'<div style="color:#ffd700;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;">Entry</div>'
-                f'<div style="color:#ffd700;font-size:14px;font-weight:600;">${entry}</div>'
-                f'</div>'
-
-                f'<div style="min-width:90px;text-align:center;">'
-                f'<div style="color:#ef5350;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;">Stop</div>'
-                f'<div style="color:#ef5350;font-size:14px;font-weight:600;">${stop} <span style="font-size:10px;">(-{risk_p}%)</span></div>'
-                f'</div>'
-
-                f'<div style="min-width:90px;text-align:center;">'
-                f'<div style="color:#26a69a;font-size:11px;text-transform:uppercase;letter-spacing:0.4px;">Target</div>'
-                f'<div style="color:#26a69a;font-size:14px;font-weight:600;">${target} <span style="font-size:10px;">(+{upside}%)</span></div>'
-                f'</div>'
-
-                f'<div style="margin-left:auto;text-align:right;">'
-                f'<div style="color:{score_c};font-size:18px;font-weight:800;">{score:+d}</div>'
-                f'<div style="color:#555;font-size:10px;">RSI {rsi_v:.0f}</div>'
-                f'</div>'
-
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-    st.markdown('<p style="color:#363a45;font-size:10px;margin-top:12px;">Not financial advice. Technical signals only.</p>',
+    st.markdown('<p style="color:#363a45;font-size:10px;margin-top:16px;">Not financial advice.</p>',
                 unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════
