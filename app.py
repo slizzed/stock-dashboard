@@ -226,10 +226,15 @@ def _fetch_news(ticker: str, company_name: str = "") -> list:
 def _load(ticker, period):
     t    = yf.Ticker(ticker)
     hist = _yf_with_retry(t.history, period=period, auto_adjust=True)
+    return hist
+
+@st.cache_data(ttl=3600)
+def _load_info(ticker):
+    t    = yf.Ticker(ticker)
     info = _yf_with_retry(lambda: t.info) or {}
     name = info.get("shortName") or info.get("longName") or ticker
     news = _fetch_news(ticker, name)
-    return hist, info, news
+    return info, news
 
 def _rsi(c, n=14):
     d = c.diff()
@@ -640,7 +645,8 @@ if not ticker:
 
 with st.spinner(f"Loading {ticker}…"):
     try:
-        hist, info, news = _load(ticker, period)
+        hist = _load(ticker, period)
+        info, news = _load_info(ticker)
     except Exception as e:
         st.error(f"Error: {e}"); st.stop()
 
