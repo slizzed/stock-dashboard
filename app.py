@@ -1,6 +1,8 @@
+import concurrent.futures
 import datetime
 import json
 import math
+import os
 import time
 import urllib.parse
 import urllib.request
@@ -15,6 +17,23 @@ import streamlit.components.v1 as components
 import yfinance as yf
 from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
+
+FINNHUB_KEY  = os.environ.get("FINNHUB_KEY", "")
+FINNHUB_BASE = "https://finnhub.io/api/v1"
+
+
+def _fh(path: str) -> dict | list:
+    """Single Finnhub GET. Returns {} on any failure."""
+    if not FINNHUB_KEY:
+        return {}
+    try:
+        sep = "&" if "?" in path else "?"
+        r = requests.get(f"{FINNHUB_BASE}{path}{sep}token={FINNHUB_KEY}", timeout=8)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return {}
 
 # Plain session with browser User-Agent to help with Yahoo Finance
 _YF_SESSION = requests.Session()
@@ -134,67 +153,56 @@ def _market_status():
 
 @st.cache_data(ttl=3600)
 def _fetch_analyst_data(ticker: str) -> dict:
-    """Fetch earnings history, analyst recommendations, and guidance."""
-    t = yf.Ticker(ticker)
     result = {"earnings": [], "recommendations": [], "next_earnings": None}
-    try:
-        ed = t.earnings_dates
-        if ed is not None and not ed.empty:
-            rows = []
-            for dt, row in ed.iterrows():
-                eps_est  = row.get("EPS Estimate")
-                eps_act  = row.get("Reported EPS")
-                surprise = row.get("Surprise(%)")
-                if eps_est is None and eps_act is None:
-                    continue
-                import math as _math
-                def _clean(v):
-                    try: return None if v is None or (isinstance(v,float) and _math.isnan(v)) else float(v)
-                    except: return None
-                eps_est  = _clean(eps_est)
-                eps_act  = _clean(eps_act)
-                surprise = _clean(surprise)
-                beat     = None
-                if eps_est is not None and eps_act is not None:
-                    beat = eps_act >= eps_est
-                rows.append({
-                    "date":    dt.strftime("%b %d, %Y") if hasattr(dt,"strftime") else str(dt)[:10],
-                    "eps_est": eps_est,
-                    "eps_act": eps_act,
-                    "surprise": surprise,
-                    "beat":    beat,
-                    "future":  dt > pd.Timestamp.now(tz=dt.tzinfo),
-                })
-            rows.sort(key=lambda x: x["date"], reverse=True)
-            future = [r for r in rows if r.get("future")]
-            past   = [r for r in rows if not r.get("future")]
-            result["earnings"]      = past[:8]
-            result["next_earnings"] = future[0] if future else None
-    except Exception:
-        pass
-    try:
-        rec = t.recommendations
-        if rec is not None and not rec.empty:
-            rec = rec.reset_index()
-            date_col = "period" if "period" in rec.columns else (rec.columns[0] if len(rec.columns) > 0 else None)
-            recs = []
-            for _, row in rec.iterrows():
-                try:
-                    firm   = str(row.get("Firm","")).strip()
-                    action = str(row.get("Action","")).strip()
-                    to_g   = str(row.get("To Grade","")).strip()
-                    fr_g   = str(row.get("From Grade","")).strip()
-                    dt_val = row.get(date_col,"")
-                    try:    dt_str = pd.Timestamp(dt_val).strftime("%b %d, %Y")
-                    except: dt_str = str(dt_val)[:10]
-                    if firm and (to_g or action):
-                        recs.append({"date":dt_str,"firm":firm,"action":action,"to":to_g,"from":fr_g})
-                except Exception:
-                    continue
-            recs.sort(key=lambda x: x["date"], reverse=True)
-            result["recommendations"] = recs[:12]
-    except Exception:
-        pass
+    if not FINNHUB_KEY:
+        return result
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+        f_earn = ex.submit(_fh, f"/stock/earnings?symbol={ticker}&limit=12")
+        f_upgr = ex.submit(_fh, f"/stock/upgrade-downgrade?symbol={ticker}")
+    earn_data = f_earn.result()
+    upgr_data = f_upgr.result()
+
+    # Earnings history
+    if isinstance(earn_data, list):
+        now = datetime.datetime.utcnow()
+        rows = []
+        for e in earn_data:
+            period = e.get("period", "")
+            actual = e.get("actual")
+            est    = e.get("estimate")
+            surp   = e.get("surprisePercent")
+            try:
+                dt_obj  = datetime.datetime.strptime(period, "%Y-%m-%d")
+                is_fut  = dt_obj > now
+                dt_str  = dt_obj.strftime("%b %d, %Y")
+            except Exception:
+                is_fut = False; dt_str = period
+            def _c(v):
+                try: return None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
+                except: return None
+            actual = _c(actual); est = _c(est); surp = _c(surp)
+            beat = (actual >= est) if (actual is not None and est is not None and not is_fut) else None
+            rows.append({"date": dt_str, "eps_est": est, "eps_act": actual if not is_fut else None,
+                         "surprise": surp, "beat": beat, "future": is_fut})
+        future = [r for r in rows if r["future"]]
+        past   = [r for r in rows if not r["future"]]
+        result["earnings"]      = past[:8]
+        result["next_earnings"] = future[0] if future else None
+
+    # Analyst upgrade/downgrade actions
+    if isinstance(upgr_data, list):
+        recs = []
+        for u in upgr_data[:20]:
+            firm   = (u.get("company") or "").strip()
+            action = (u.get("action") or "").strip()
+            to_g   = (u.get("toGrade") or "").strip()
+            fr_g   = (u.get("fromGrade") or "").strip()
+            ts     = u.get("gradeTime", 0)
+            try:    dt_str = datetime.datetime.utcfromtimestamp(ts).strftime("%b %d, %Y")
+            except: dt_str = ""
+            if firm:
+                recs.append({"date": dt_str, "firm": firm, "action": action, "to": to_g, "from": fr_g})
+        result["recommendations"] = recs[:12]
     return result
 
 
@@ -240,34 +248,112 @@ def _load(ticker, period):
 
 @st.cache_data(ttl=3600)
 def _load_info(ticker):
-    t = yf.Ticker(ticker, session=_YF_SESSION)
     info = {}
-    try:
-        info = _yf_with_retry(lambda: t.info) or {}
-    except Exception:
-        pass
 
-    # Supplement missing fields from fast_info (more reliable endpoint)
-    try:
-        fi = t.fast_info
-        _fi_map = {
-            "marketCap":        "market_cap",
-            "fiftyTwoWeekHigh": "fifty_two_week_high",
-            "fiftyTwoWeekLow":  "fifty_two_week_low",
-            "averageVolume":    "three_month_average_volume",
-            "sharesOutstanding":"shares",
-            "exchange":         "exchange",
-            "currency":         "currency",
-        }
-        for info_key, fi_attr in _fi_map.items():
-            if not info.get(info_key):
-                val = getattr(fi, fi_attr, None)
+    if FINNHUB_KEY:
+        # Fire all Finnhub calls in parallel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            f_prof = ex.submit(_fh, f"/stock/profile2?symbol={ticker}")
+            f_metr = ex.submit(_fh, f"/stock/metric?symbol={ticker}&metric=all")
+            f_tgt  = ex.submit(_fh, f"/stock/price-target?symbol={ticker}")
+            f_rec  = ex.submit(_fh, f"/stock/recommendation?symbol={ticker}")
+        prof = f_prof.result()
+        m    = (f_metr.result() or {}).get("metric", {})
+        tgt  = f_tgt.result()
+        rec  = f_rec.result()
+
+        def _n(v):
+            try: return None if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) else v
+            except: return None
+
+        # Identity / header
+        info["shortName"]    = prof.get("name") or ticker
+        info["longName"]     = prof.get("name") or ticker
+        info["sector"]       = prof.get("finnhubIndustry", "")
+        info["exchange"]     = prof.get("exchange", "")
+        mc = prof.get("marketCapitalization")
+        info["marketCap"]    = mc * 1e6 if mc else None
+        so = prof.get("shareOutstanding")
+        info["sharesOutstanding"] = so * 1e6 if so else None
+        info["floatShares"]  = info["sharesOutstanding"]
+
+        # Price metrics from metric endpoint
+        info["fiftyTwoWeekHigh"] = _n(m.get("52WeekHigh"))
+        info["fiftyTwoWeekLow"]  = _n(m.get("52WeekLow"))
+        atv = _n(m.get("10DayAverageTradingVolume"))
+        info["averageVolume"]    = int(atv * 1e6) if atv else None
+        info["beta"]             = _n(m.get("beta"))
+
+        # Valuation
+        info["trailingPE"]                    = _n(m.get("peBasicExclExtraTTM") or m.get("peNormalizedAnnual"))
+        info["forwardPE"]                     = _n(m.get("peForward"))
+        info["priceToSalesTrailing12Months"]  = _n(m.get("psTTM"))
+        info["priceToBook"]                   = _n(m.get("pbAnnual"))
+
+        # Earnings / revenue
+        info["trailingEps"]    = _n(m.get("epsInclExtraItemsTTM") or m.get("earningsPerShareTTM"))
+        info["forwardEps"]     = _n(m.get("epsForward"))
+        eg = _n(m.get("epsGrowthTTMYoy"))
+        info["earningsGrowth"] = eg / 100 if eg is not None else None
+        rg = _n(m.get("revenueGrowthTTMYoy"))
+        info["revenueGrowth"]  = rg / 100 if rg is not None else None
+        rps = _n(m.get("revenuePerShareTTM"))
+        info["totalRevenue"]   = rps * info["sharesOutstanding"] if (rps and info.get("sharesOutstanding")) else None
+
+        # Margins
+        for key, fkey in [("grossMargins","grossMarginTTM"),
+                          ("operatingMargins","operatingMarginTTM"),
+                          ("profitMargins","netProfitMarginTTM")]:
+            v = _n(m.get(fkey))
+            info[key] = v / 100 if v is not None else None
+
+        # EBITDA (approximate from EV / EV-to-EBITDA)
+        ev    = _n(m.get("enterpriseValue"))
+        ev2eb = _n(m.get("enterpriseValueToEbitdaTTM"))
+        info["ebitda"] = (ev / ev2eb * 1e6) if (ev and ev2eb and ev2eb != 0) else None
+
+        # Balance sheet
+        info["debtToEquity"]    = _n(m.get("totalDebt/totalEquityAnnual") or m.get("longTermDebt/equityAnnual"))
+        info["currentRatio"]    = _n(m.get("currentRatioAnnual"))
+        roe = _n(m.get("roeTTM"))
+        info["returnOnEquity"]  = roe / 100 if roe is not None else None
+
+        # Float / short
+        si = _n(m.get("shortInterestSharesOutstanding"))
+        info["shortPercentOfFloat"] = si / 100 if si is not None else None
+        dy = _n(m.get("dividendYieldIndicatedAnnual"))
+        info["dividendYield"]  = dy / 100 if dy is not None else None
+
+        # Analyst consensus from recommendation trend
+        if isinstance(rec, list) and rec:
+            latest = rec[0]
+            sb, b, h, s, ss = (latest.get(k, 0) or 0 for k in
+                               ("strongBuy","buy","hold","sell","strongSell"))
+            total = sb + b + h + s + ss
+            if total:
+                bull = (sb + b) / total
+                info["recommendationKey"]       = "strong_buy" if bull > 0.7 else ("buy" if bull > 0.55 else ("hold" if bull > 0.35 else "sell"))
+                info["numberOfAnalystOpinions"] = total
+
+        # Price targets
+        info["targetLowPrice"]  = _n(tgt.get("targetLow"))
+        info["targetMeanPrice"] = _n(tgt.get("targetMean"))
+        info["targetHighPrice"] = _n(tgt.get("targetHigh"))
+
+    else:
+        # No Finnhub key: try yfinance fast_info for basic header data
+        try:
+            t  = yf.Ticker(ticker, session=_YF_SESSION)
+            fi = t.fast_info
+            for ik, fa in [("marketCap","market_cap"),("fiftyTwoWeekHigh","fifty_two_week_high"),
+                           ("fiftyTwoWeekLow","fifty_two_week_low"),("exchange","exchange")]:
+                val = getattr(fi, fa, None)
                 if val is not None:
-                    info[info_key] = val
-    except Exception:
-        pass
+                    info[ik] = val
+        except Exception:
+            pass
 
-    name = info.get("shortName") or info.get("longName") or ticker
+    name = info.get("shortName") or ticker
     news = _fetch_news(ticker, name)
     return info, news
 
