@@ -3,3 +3,5 @@ yfinance
 plotly
 pandas
 streamlit-autorefresh
+requests
+requests-cache

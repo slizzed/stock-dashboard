@@ -8,11 +8,22 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
+import requests_cache
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
+
+# Cached session — reduces repeated requests and helps bypass rate limits
+_YF_SESSION = requests_cache.CachedSession("yf_cache", expire_after=300)
+_YF_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+})
 
 
 def _yf_with_retry(fn, *args, retries=3, **kwargs):
@@ -224,14 +235,39 @@ def _fetch_news(ticker: str, company_name: str = "") -> list:
 
 @st.cache_data(ttl=55)
 def _load(ticker, period):
-    t    = yf.Ticker(ticker)
+    t    = yf.Ticker(ticker, session=_YF_SESSION)
     hist = _yf_with_retry(t.history, period=period, auto_adjust=True)
     return hist
 
 @st.cache_data(ttl=3600)
 def _load_info(ticker):
-    t    = yf.Ticker(ticker)
-    info = _yf_with_retry(lambda: t.info) or {}
+    t = yf.Ticker(ticker, session=_YF_SESSION)
+    info = {}
+    try:
+        info = _yf_with_retry(lambda: t.info) or {}
+    except Exception:
+        pass
+
+    # Supplement missing fields from fast_info (more reliable endpoint)
+    try:
+        fi = t.fast_info
+        _fi_map = {
+            "marketCap":        "market_cap",
+            "fiftyTwoWeekHigh": "fifty_two_week_high",
+            "fiftyTwoWeekLow":  "fifty_two_week_low",
+            "averageVolume":    "three_month_average_volume",
+            "sharesOutstanding":"shares",
+            "exchange":         "exchange",
+            "currency":         "currency",
+        }
+        for info_key, fi_attr in _fi_map.items():
+            if not info.get(info_key):
+                val = getattr(fi, fi_attr, None)
+                if val is not None:
+                    info[info_key] = val
+    except Exception:
+        pass
+
     name = info.get("shortName") or info.get("longName") or ticker
     news = _fetch_news(ticker, name)
     return info, news
